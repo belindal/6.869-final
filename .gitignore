@@ -1,3 +1,9 @@
 *.caffemodel
 *.tsv
+__pycache__/
 /snap
+data/
+save/
+run/
+img_dir/
+frcnn_output/

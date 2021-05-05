@@ -163,7 +163,7 @@ class VQAEvaluator:
                 score += label[ans]
         return score / len(quesid2ans)
 
-    def dump_result(self, quesid2ans: dict, path):
+    def dump_result(self, quesid2ans: dict, path, human_readable: bool = False):
         """
         Dump results to a json file, which could be submitted to the VQA online evaluation.
         VQA json file submission requirement:
@@ -177,12 +177,16 @@ class VQAEvaluator:
         :param path: The desired path of saved file.
         """
         with open(path, 'w') as f:
-            result = []
+            results = []
             for ques_id, ans in quesid2ans.items():
-                result.append({
+                result = {
                     'question_id': ques_id,
                     'answer': ans
-                })
-            json.dump(result, f, indent=4, sort_keys=True)
+                }
+                if human_readable:
+                    question_datum = self.dataset.id2datum[ques_id]
+                    result['question'] = question_datum
+                results.append(result)
+            json.dump(results, f, indent=4, sort_keys=True)
 
 

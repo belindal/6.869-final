@@ -7,6 +7,8 @@ import base64
 import time
 
 import numpy as np
+import glob
+import os
 
 csv.field_size_limit(sys.maxsize)
 FIELDNAMES = ["img_id", "img_h", "img_w", "objects_id", "objects_conf",
@@ -53,3 +55,21 @@ def load_obj_tsv(fname, topk=None):
     print("Loaded %d images in file %s in %d seconds." % (len(data), fname, elapsed_time))
     return data
 
+def load_obj_npy(dirname):
+    data = []
+    for img_info_fn in glob.glob(f'{dirname}/*_info.npy'):
+        info = np.load(img_info_fn, allow_pickle=True).item()
+        fts = np.load(img_info_fn.replace('_info', ''), allow_pickle=True)
+        boxes = info['bbox']
+        num_boxes = len(info['bbox'])
+        img_id = os.path.split(img_info_fn)[-1].replace('_info.npy', '')
+        item = {
+            'num_boxes': num_boxes,
+            'boxes': boxes,
+            'features': fts,
+            'img_id': img_id,
+            'img_h': info['image_height'],
+            'img_w': info['image_width'],
+        }
+        data.append(item)
+    return data

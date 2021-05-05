@@ -12,10 +12,13 @@ from tqdm import tqdm
 from param import args
 from pretrain.qa_answer_table import load_lxmert_qa
 from tasks.vqa_model import VQAModel
-from tasks.vqa_data import VQADataset, VQATorchDataset, VQAEvaluator
+from tasks.vqa_data import VQADataset, VQATorchDataset, VQAEvaluator, MSCOCO_IMGFEAT_ROOT, SPLIT2NAME
+from utils import load_obj_tsv, load_obj_npy
+import glob
+import numpy as np
+import json
 
 DataTuple = collections.namedtuple("DataTuple", 'dataset loader evaluator')
-
 
 def get_data_tuple(splits: str, bs:int, shuffle=False, drop_last=False) -> DataTuple:
     dset = VQADataset(splits)
@@ -31,28 +34,31 @@ def get_data_tuple(splits: str, bs:int, shuffle=False, drop_last=False) -> DataT
 
 
 class VQA:
-    def __init__(self):
+    def __init__(self, interact):
         # Datasets
-        self.train_tuple = get_data_tuple(
-            args.train, bs=args.batch_size, shuffle=True, drop_last=True
-        )
+        if not interact:
+            self.train_tuple = get_data_tuple(
+                args.train, bs=args.batch_size, shuffle=True, drop_last=True
+            )
         if args.valid != "":
             self.valid_tuple = get_data_tuple(
                 args.valid, bs=1024,
-                shuffle=False, drop_last=False
+                shuffle=False, drop_last=False,
             )
         else:
             self.valid_tuple = None
+        label2ans = json.load(open("data/vqa/trainval_label2ans.json"))
+        num_answers = len(label2ans)
         
         # Model
-        self.model = VQAModel(self.train_tuple.dataset.num_answers)
+        self.model = VQAModel(num_answers)
 
         # Load pre-trained weights
         if args.load_lxmert is not None:
             self.model.lxrt_encoder.load(args.load_lxmert)
         if args.load_lxmert_qa is not None:
             load_lxmert_qa(args.load_lxmert_qa, self.model,
-                           label2ans=self.train_tuple.dataset.label2ans)
+                           label2ans=label2ans)
         
         # GPU options
         self.model = self.model.cuda()
@@ -61,17 +67,18 @@ class VQA:
 
         # Loss and Optimizer
         self.bce_loss = nn.BCEWithLogitsLoss()
-        if 'bert' in args.optim:
-            batch_per_epoch = len(self.train_tuple.loader)
-            t_total = int(batch_per_epoch * args.epochs)
-            print("BertAdam Total Iters: %d" % t_total)
-            from lxrt.optimization import BertAdam
-            self.optim = BertAdam(list(self.model.parameters()),
-                                  lr=args.lr,
-                                  warmup=0.1,
-                                  t_total=t_total)
-        else:
-            self.optim = args.optimizer(self.model.parameters(), args.lr)
+        if not interact:
+            if 'bert' in args.optim:
+                batch_per_epoch = len(self.train_tuple.loader)
+                t_total = int(batch_per_epoch * args.epochs)
+                print("BertAdam Total Iters: %d" % t_total)
+                from lxrt.optimization import BertAdam
+                self.optim = BertAdam(list(self.model.parameters()),
+                                    lr=args.lr,
+                                    warmup=0.1,
+                                    t_total=t_total)
+            else:
+                self.optim = args.optimizer(self.model.parameters(), args.lr)
         
         # Output Directory
         self.output = args.output
@@ -145,12 +152,47 @@ class VQA:
                     quesid2ans[qid.item()] = ans
         if dump is not None:
             evaluator.dump_result(quesid2ans, dump)
+            evaluator.dump_result(quesid2ans, dump[:-5]+"_human_readable.json", human_readable=True)
         return quesid2ans
 
     def evaluate(self, eval_tuple: DataTuple, dump=None):
         """Evaluate all data in data_tuple."""
         quesid2ans = self.predict(eval_tuple, dump)
         return eval_tuple.evaluator.evaluate(quesid2ans)
+    
+    def interact(self, imgid2img, ans2label, label2ans):
+        self.model.eval()
+        while True:
+            imgid = input("Image ID: ")
+            if imgid not in imgid2img:
+                imgid = f"COCO_val2014_000000{imgid}"
+                if imgid not in imgid2img:
+                    print("Image not found! Try again!")
+                    continue
+            
+            # Get image info
+            img_info = imgid2img[imgid]
+            obj_num = img_info['num_boxes']
+            feats = img_info['features'].copy()
+            boxes = img_info['boxes'].copy()
+            assert obj_num == len(boxes) == len(feats)
+
+            # Normalize the boxes (to 0 ~ 1)
+            img_h, img_w = img_info['img_h'], img_info['img_w']
+            boxes = boxes.copy()
+            boxes[:, (0, 2)] /= img_w
+            boxes[:, (1, 3)] /= img_h
+            np.testing.assert_array_less(boxes, 1+1e-5)
+            np.testing.assert_array_less(-boxes, 0+1e-5)
+            feats, boxes = torch.tensor(feats).cuda(), torch.tensor(boxes).cuda()
+            sent = ""
+            while sent != "new":
+                sent = input("Question: ")
+                with torch.no_grad():
+                    logit = self.model(feats.unsqueeze(0), boxes.unsqueeze(0), [sent])
+                    score, label = logit.max(1)
+                    ans = label2ans[label]
+                print(f"Answer: {ans}")
 
     @staticmethod
     def oracle_score(data_tuple):
@@ -175,7 +217,8 @@ class VQA:
 
 if __name__ == "__main__":
     # Build Class
-    vqa = VQA()
+
+    vqa = VQA(args.interact)
 
     # Load VQA model weights
     # Note: It is different from loading LXMERT pre-trained weights.
@@ -183,7 +226,22 @@ if __name__ == "__main__":
         vqa.load(args.load)
 
     # Test or Train
-    if args.test is not None:
+    if args.interact:
+        # Loading detection features to img_data
+        img_data = []
+        img_data.extend(load_obj_npy('frcnn_output'))
+        for split in ['minival']:
+            tsv_file = os.path.join(MSCOCO_IMGFEAT_ROOT, '%s_obj36.tsv' % (SPLIT2NAME[split]))
+            img_data.extend(load_obj_tsv(tsv_file, topk=5000))
+        # Answers
+        ans2label = json.load(open("data/vqa/trainval_ans2label.json"))
+        label2ans = json.load(open("data/vqa/trainval_label2ans.json"))
+        assert len(ans2label) == len(label2ans)
+        imgid2img = {}
+        for img_datum in img_data:
+            imgid2img[img_datum['img_id']] = img_datum
+        result = vqa.interact(imgid2img, ans2label, label2ans)
+    elif args.test is not None:
         args.fast = args.tiny = False       # Always loading all data in test
         if 'test' in args.test:
             vqa.predict(
