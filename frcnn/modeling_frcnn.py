@@ -444,7 +444,7 @@ class Box2BoxTransform:
     """
 
     def __init__(
-        self, weights: Tuple[float, float, float, float], scale_clamp: float = None
+        self, weights: Tuple[float, float, float, float], scale_clamp: float = None, device: str = 'cpu'
     ):
         """
         Args:
@@ -466,6 +466,7 @@ class Box2BoxTransform:
             (based on a small anchor, 16px, and a typical image size, 1000px).
             """
             self.scale_clamp = math.log(1000.0 / 16)
+        self.device = device
 
     def get_deltas(self, src_boxes, target_boxes):
         """
@@ -534,7 +535,7 @@ class Box2BoxTransform:
         pred_w = torch.exp(dw) * widths[:, None]
         pred_h = torch.exp(dh) * heights[:, None]
 
-        pred_boxes = torch.zeros_like(deltas)
+        pred_boxes = torch.zeros_like(deltas).to(self.device)
         pred_boxes[:, 0::4] = pred_ctr_x - 0.5 * pred_w  # x1
         pred_boxes[:, 1::4] = pred_ctr_y - 0.5 * pred_h  # y1
         pred_boxes[:, 2::4] = pred_ctr_x + 0.5 * pred_w  # x2
@@ -675,6 +676,7 @@ class RPNOutputs:
         boundary_threshold=0,
         gt_boxes=None,
         smooth_l1_beta=0.0,
+        device='cpu'
     ):
         """
         Args:
@@ -711,6 +713,7 @@ class RPNOutputs:
         self.num_images = len(images)
         self.boundary_threshold = boundary_threshold
         self.smooth_l1_beta = smooth_l1_beta
+        self.device = device
 
     def _get_ground_truth(self):
         raise NotImplementedError()
@@ -1211,10 +1214,10 @@ class ROIPooler(nn.Module):
 
 
 class ROIOutputs:
-    def __init__(self, cfg, training=False):
+    def __init__(self, cfg, training=False, device='cpu'):
         self.smooth_l1_beta = cfg.roi_box_head.smooth_l1_beta
         self.box2box_transform = Box2BoxTransform(
-            weights=cfg.roi_box_head.bbox_reg_weights
+            weights=cfg.roi_box_head.bbox_reg_weights, device=device,
         )
         self.training = training
         self.score_thresh = cfg.roi_heads.score_thresh_test
@@ -1225,6 +1228,7 @@ class ROIOutputs:
         if not isinstance(nms_thresh, list):
             nms_thresh = [nms_thresh]
         self.nms_thresh = nms_thresh
+        self.device = device
 
     def _predict_boxes(self, proposals, box_deltas, preds_per_image):
         num_pred = box_deltas.size(0)
@@ -1615,7 +1619,7 @@ class RPN(nn.Module):
     Region Proposal Network, introduced by the Faster R-CNN paper.
     """
 
-    def __init__(self, cfg, input_shape: Dict[str, ShapeSpec]):
+    def __init__(self, cfg, input_shape: Dict[str, ShapeSpec], device: str = 'cpu'):
         super().__init__()
 
         self.min_box_side_len = cfg.proposal_generator.min_size
@@ -1639,11 +1643,12 @@ class RPN(nn.Module):
         self.anchor_generator = AnchorGenerator(
             cfg, [input_shape[f] for f in self.in_features]
         )
-        self.box2box_transform = Box2BoxTransform(weights=cfg.rpn.bbox_reg_weights)
+        self.box2box_transform = Box2BoxTransform(weights=cfg.rpn.bbox_reg_weights, device=device)
         self.anchor_matcher = Matcher(
             cfg.rpn.iou_thresholds, cfg.rpn.iou_labels, allow_low_quality_matches=True
         )
         self.rpn_head = RPNHead(cfg, [input_shape[f] for f in self.in_features])
+        self.device = device
 
     def training(self, images, image_shapes, features, gt_boxes):
         pass
@@ -1694,6 +1699,7 @@ class RPN(nn.Module):
             self.boundary_threshold,
             gt_boxes,
             self.smooth_l1_beta,
+            device=self.device,
         )
         # For RPN-only models, the proposals are the final output
 
@@ -1779,9 +1785,9 @@ class GeneralizedRCNN(nn.Module):
 
         self.device = torch.device(cfg.model.device)
         self.backbone = build_backbone(cfg)
-        self.proposal_generator = RPN(cfg, self.backbone.output_shape())
+        self.proposal_generator = RPN(cfg, self.backbone.output_shape(), device=self.device)
         self.roi_heads = Res5ROIHeads(cfg, self.backbone.output_shape())
-        self.roi_outputs = ROIOutputs(cfg)
+        self.roi_outputs = ROIOutputs(cfg, device=self.device)
         self.to(self.device)
 
     @classmethod
@@ -2037,6 +2043,7 @@ class GeneralizedRCNN(nn.Module):
             "return_tensors": kwargs.get("return_tensors", None),
             "pad_value": kwargs.get("pad_value", 0),
             "padding": kwargs.get("padding", None),
+            "location": self.device,
         }
         preds_per_image = torch.tensor([p.size(0) for p in boxes])
         boxes = pad_list_tensors(boxes, preds_per_image, **subset_kwargs)

@@ -11,6 +11,10 @@ from torch.utils.data import Dataset
 
 from param import args
 from utils import load_obj_tsv
+from frcnn.processing_image import Preprocess
+
+from glob import glob
+from tqdm import tqdm
 
 # Load part of the dataset for fast checking.
 # Notice that here is the number of images instead of the number of data,
@@ -19,13 +23,14 @@ TINY_IMG_NUM = 512
 FAST_IMG_NUM = 5000
 
 # The path to data and image features.
+IMG_DIR = 'img_dir/'
 VQA_DATA_ROOT = 'data/vqa/'
 MSCOCO_IMGFEAT_ROOT = 'data/mscoco_imgfeat/'
 SPLIT2NAME = {
-    'train': 'train2014',
-    'valid': 'val2014',
-    'minival': 'val2014',
-    'nominival': 'val2014',
+    'train': 'train2014_4',
+    'valid': 'val2014_4',
+    'minival': 'val2014_4',
+    'nominival': 'val2014_4',
     'test': 'test2015',
 }
 
@@ -74,6 +79,81 @@ class VQADataset:
 
 
 """
+Returns non-featurized images
+"""
+class VQARawTorchDataset(Dataset):
+    def __init__(self, dataset: VQADataset, frcnn_cfg = None):
+        super().__init__()
+        self.raw_dataset = dataset
+
+        if args.tiny:
+            topk = TINY_IMG_NUM
+        elif args.fast:
+            topk = FAST_IMG_NUM
+        else:
+            topk = None
+
+        # Loading raw images to img_data
+        img_data = []
+        image_preprocess = Preprocess(frcnn_cfg)
+        for split in dataset.splits:
+            data_dir = os.path.join(IMG_DIR, SPLIT2NAME[split])
+            # for fn in tqdm(glob(f"{data_dir}/*.jpg")):
+            ckpt_save_dir = data_dir+"_tensorized"
+            if not os.path.exists(ckpt_save_dir):
+                os.makedirs(ckpt_save_dir, exist_ok=True)
+            if not os.path.exists(os.path.join(ckpt_save_dir, 'image_tensors.pt')):
+                img_ids, images, sizes, scales_yx = image_preprocess(glob(f"{data_dir}/*.jpg"), ckpt_save_dir=ckpt_save_dir)
+            else:
+                img_ids, images, sizes, scales_yx = torch.load(os.path.join(ckpt_save_dir, 'image_tensors.pt'))
+            # img_id = os.path.split(fn)[1].replace('.jpg', '')
+            assert len(img_ids) == len(images) == len(sizes) == len(scales_yx)
+            for i in range(len(img_ids)):
+                img_datum = {
+                    'img_id': img_ids[i],
+                    'images': images[i],
+                    'sizes': sizes[i],
+                    'scales_yx': scales_yx[i],
+                }
+                img_data.append(img_datum)
+        # Convert img list to dict
+        self.imgid2img = {}
+        for img_datum in img_data:
+            self.imgid2img[img_datum['img_id']] = img_datum
+
+        self.data = []
+        for datum in self.raw_dataset.data:
+            if datum['img_id'] in self.imgid2img:
+                self.data.append(datum)
+
+        print("Use %d data in torch dataset" % (len(self.data)))
+        print()
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, item: int):
+        datum = self.data[item]
+
+        img_id = datum['img_id']
+        ques_id = datum['question_id']
+        ques = datum['sent']
+        image = datum['image']
+        size = datum['size']
+        scale_yx = datum['scale_yx']
+
+        # Provide label (target)
+        if 'label' in datum:
+            label = datum['label']
+            target = torch.zeros(self.raw_dataset.num_answers)
+            for ans, score in label.items():
+                target[self.raw_dataset.ans2label[ans]] = score
+            return ques_id, image, size, scale_yx, ques, target
+        else:
+            return ques_id, image, size, scale_yx, ques
+
+
+"""
 An example in obj36 tsv:
 FIELDNAMES = ["img_id", "img_h", "img_w", "objects_id", "objects_conf",
               "attrs_id", "attrs_conf", "num_boxes", "boxes", "features"]
@@ -111,6 +191,7 @@ class VQATorchDataset(Dataset):
         for datum in self.raw_dataset.data:
             if datum['img_id'] in self.imgid2img:
                 self.data.append(datum)
+
         print("Use %d data in torch dataset" % (len(self.data)))
         print()
 

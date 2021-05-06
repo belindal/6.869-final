@@ -12,17 +12,25 @@ from tqdm import tqdm
 from param import args
 from pretrain.qa_answer_table import load_lxmert_qa
 from tasks.vqa_model import VQAModel
-from tasks.vqa_data import VQADataset, VQATorchDataset, VQAEvaluator, MSCOCO_IMGFEAT_ROOT, SPLIT2NAME
+from tasks.vqa_data import VQADataset, VQATorchDataset, VQARawTorchDataset, VQAEvaluator, MSCOCO_IMGFEAT_ROOT, SPLIT2NAME
 from utils import load_obj_tsv, load_obj_npy
-import glob
+from glob import glob
 import numpy as np
 import json
+from frcnn.extract_features_frcnn import FeatureExtractor
+from frcnn.frcnn_utils import Config
+from frcnn.modeling_frcnn import GeneralizedRCNN
+from frcnn.processing_image import Preprocess
+
 
 DataTuple = collections.namedtuple("DataTuple", 'dataset loader evaluator')
 
-def get_data_tuple(splits: str, bs:int, shuffle=False, drop_last=False) -> DataTuple:
+def get_data_tuple(splits: str, bs:int, shuffle=False, drop_last=False, frcnn_cfg=False) -> DataTuple:
     dset = VQADataset(splits)
-    tset = VQATorchDataset(dset)
+    if frcnn_cfg: 
+        tset = VQARawTorchDataset(dset, frcnn_cfg=frcnn_cfg)
+    else:
+        tset = VQATorchDataset(dset)
     evaluator = VQAEvaluator(dset)
     data_loader = DataLoader(
         tset, batch_size=bs,
@@ -35,15 +43,30 @@ def get_data_tuple(splits: str, bs:int, shuffle=False, drop_last=False) -> DataT
 
 class VQA:
     def __init__(self, interact):
+        # Load FRCNN weights
+        self.frcnn_cfg = None
+        frcnn = None
+        if args.load_frcnn:
+            self.frcnn_cfg = Config.from_pretrained(
+                FeatureExtractor.CONFIG_URL.get("FRCNN", "FRCNN")
+            )
+            self.frcnn_cfg.model.device = 'cuda'
+            frcnn = GeneralizedRCNN.from_pretrained(
+                FeatureExtractor.MODEL_URL.get("FRCNN", "FRCNN"),
+                config=self.frcnn_cfg,
+            )
+
         # Datasets
         if not interact:
             self.train_tuple = get_data_tuple(
-                args.train, bs=args.batch_size, shuffle=True, drop_last=True
+                args.train, bs=args.batch_size, shuffle=True, drop_last=True,
+                frcnn_cfg=self.frcnn_cfg,
             )
         if args.valid != "":
             self.valid_tuple = get_data_tuple(
                 args.valid, bs=1024,
                 shuffle=False, drop_last=False,
+                frcnn_cfg=self.frcnn_cfg,
             )
         else:
             self.valid_tuple = None
@@ -51,7 +74,7 @@ class VQA:
         num_answers = len(label2ans)
         
         # Model
-        self.model = VQAModel(num_answers)
+        self.model = VQAModel(num_answers, frcnn=frcnn, frcnn_cfg=self.frcnn_cfg)
 
         # Load pre-trained weights
         if args.load_lxmert is not None:
@@ -91,13 +114,18 @@ class VQA:
         best_valid = 0.
         for epoch in range(args.epochs):
             quesid2ans = {}
-            for i, (ques_id, feats, boxes, sent, target) in iter_wrapper(enumerate(loader)):
+            for i, datum_tuple in iter_wrapper(enumerate(loader)):
+                if args.load_frcnn:
+                    (ques_id, images, sizes, scales_yx, sent, target) = datum_tuple
+                    model_inputs = {'images': images.cuda(), 'sizes': sizes.cuda(), 'scales_yx': scales_yx.cuda(), 'sent': sent}
+                else:
+                    (ques_id, feats, boxes, sent, target) = datum_tuple
+                    model_inputs = {'feat': feats.cuda(), 'pos': boxes.cuda(), 'sent': sent}
 
                 self.model.train()
                 self.optim.zero_grad()
 
-                feats, boxes, target = feats.cuda(), boxes.cuda(), target.cuda()
-                logit = self.model(feats, boxes, sent)
+                logit = self.model(**model_inputs)
                 assert logit.dim() == target.dim() == 2
                 loss = self.bce_loss(logit, target)
                 loss = loss * logit.size(1)
@@ -142,9 +170,13 @@ class VQA:
         dset, loader, evaluator = eval_tuple
         quesid2ans = {}
         for i, datum_tuple in enumerate(loader):
-            ques_id, feats, boxes, sent = datum_tuple[:4]   # Avoid seeing ground truth
+            if args.load_frcnn:
+                (ques_id, images, sizes, scales_yx, sent) = datum_tuple[:5]
+                model_inputs = {'images': images.cuda(), 'sizes': sizes.cuda(), 'scales_yx': scales_yx.cuda(), 'sent': sent}
+            else:
+                (ques_id, feats, boxes, sent) = datum_tuple[:4]
+                model_inputs = {'feat': feats.cuda(), 'pos': boxes.cuda(), 'sent': sent}
             with torch.no_grad():
-                feats, boxes = feats.cuda(), boxes.cuda()
                 logit = self.model(feats, boxes, sent)
                 score, label = logit.max(1)
                 for qid, l in zip(ques_id, label.cpu().numpy()):
@@ -160,8 +192,11 @@ class VQA:
         quesid2ans = self.predict(eval_tuple, dump)
         return eval_tuple.evaluator.evaluate(quesid2ans)
     
-    def interact(self, imgid2img, ans2label, label2ans):
+    def interact(self, imgid2img, ans2label, label2ans, adversarial=True):
         self.model.eval()
+        n_iter = 10
+        step_size = 1e-5  # TODO tune
+        k=10
         while True:
             imgid = input("Image ID: ")
             if imgid not in imgid2img:
@@ -170,29 +205,58 @@ class VQA:
                     print("Image not found! Try again!")
                     continue
             
-            # Get image info
-            img_info = imgid2img[imgid]
-            obj_num = img_info['num_boxes']
-            feats = img_info['features'].copy()
-            boxes = img_info['boxes'].copy()
-            assert obj_num == len(boxes) == len(feats)
+            if args.load_frcnn:
+                #TODO
+                img_info = imgid2img[imgid]
+                model_inputs = {k: img_info[k].clone().unsqueeze(0).cuda() for k in ['images', 'sizes', 'scales_yx']}
+            else:
+                # Get image info
+                img_info = imgid2img[imgid]
+                obj_num = img_info['num_boxes']
+                feats = img_info['features'].copy()
+                boxes = img_info['boxes'].copy()
+                assert obj_num == len(boxes) == len(feats)
 
-            # Normalize the boxes (to 0 ~ 1)
-            img_h, img_w = img_info['img_h'], img_info['img_w']
-            boxes = boxes.copy()
-            boxes[:, (0, 2)] /= img_w
-            boxes[:, (1, 3)] /= img_h
-            np.testing.assert_array_less(boxes, 1+1e-5)
-            np.testing.assert_array_less(-boxes, 0+1e-5)
-            feats, boxes = torch.tensor(feats).cuda(), torch.tensor(boxes).cuda()
+                # Normalize the boxes (to 0 ~ 1)
+                img_h, img_w = img_info['img_h'], img_info['img_w']
+                boxes = boxes.copy()
+                boxes[:, (0, 2)] /= img_w
+                boxes[:, (1, 3)] /= img_h
+                np.testing.assert_array_less(boxes, 1+1e-5)
+                np.testing.assert_array_less(-boxes, 0+1e-5)
+                feats, boxes = torch.tensor(feats).cuda(), torch.tensor(boxes).cuda()
+                model_inputs = {'feat': feats.unsqueeze(0), 'pos': boxes.unsqueeze(0)}
             sent = ""
             while sent != "new":
                 sent = input("Question: ")
                 with torch.no_grad():
-                    logit = self.model(feats.unsqueeze(0), boxes.unsqueeze(0), [sent])
+                    model_inputs['sent'] = [sent]
+                    logit = self.model(**model_inputs)
                     score, label = logit.max(1)
+                    topk_score, topk_label = logit.squeeze(0).topk(k)
                     ans = label2ans[label]
                 print(f"Answer: {ans}")
+                topk_labels_print = '\n\t'.join([f'{label2ans[label]}: {topk_score[idx]}' for idx, label in enumerate(topk_label)])
+                print(f"Top-K prediction:\n\t{topk_labels_print}")
+                if adversarial:
+                    desired_target = None
+                    while not desired_target in ans2label:
+                        desired_target = input(f"Desired Target: ")
+                    desired_label = torch.zeros(logit.size()).cuda()
+                    desired_label[0,ans2label[desired_target]] = 1
+                    import pdb; pdb.set_trace()
+                    for i in tqdm(range(n_iter)):
+                        loss = self.bce_loss(logit, desired_label)
+                        gradient = torch.autograd.grad(loss, images)[0]
+                        images -= step_size * gradient
+                        model_inputs['images'] = images
+                        logit = self.model(**model_inputs)
+                        topk_score, topk_label = logit.squeeze(0).topk(k, dim=1)
+                        topk_labels_print = '\n\t'.join([f'{label2ans[label]}: {topk_score[idx]}' for idx, label in enumerate(topk_label)])
+                        print(f"Step {i}/{n_iter} Top-K prediction:\n\t{topk_labels_print}")
+                    import pdb; pdb.set_trace()
+                    np.save(images, os.path.join('adversarial_outputs', f'{imgid}.jpg'))
+                
 
     @staticmethod
     def oracle_score(data_tuple):
@@ -212,7 +276,7 @@ class VQA:
     def load(self, path):
         print("Load model from %s" % path)
         state_dict = torch.load("%s.pth" % path)
-        self.model.load_state_dict(state_dict)
+        self.model.load_state_dict(state_dict, strict=False)
 
 
 if __name__ == "__main__":
@@ -229,14 +293,30 @@ if __name__ == "__main__":
     if args.interact:
         # Loading detection features to img_data
         img_data = []
-        img_data.extend(load_obj_npy('frcnn_output'))
-        for split in ['minival']:
-            tsv_file = os.path.join(MSCOCO_IMGFEAT_ROOT, '%s_obj36.tsv' % (SPLIT2NAME[split]))
-            img_data.extend(load_obj_tsv(tsv_file, topk=5000))
+        if args.load_frcnn:
+            image_preprocess = Preprocess(vqa.frcnn_cfg)
+            img_ids, images, sizes, scales_yx = image_preprocess(glob(f"img_dir/*.jpg"))
+            assert len(img_ids) == len(images) == len(sizes) == len(scales_yx)
+            for i in range(len(img_ids)):
+                img_datum = {
+                    'img_id': img_ids[i],
+                    'images': images[i],
+                    'sizes': sizes[i],
+                    'scales_yx': scales_yx[i],
+                }
+                img_data.append(img_datum)
+        else:
+            img_data.extend(load_obj_npy('frcnn_output'))
+            # for split in ['minival']:
+            #     tsv_file = os.path.join(MSCOCO_IMGFEAT_ROOT, '%s_obj36.tsv' % (SPLIT2NAME[split]))
+            #     img_data.extend(load_obj_tsv(tsv_file, topk=5000))
+
         # Answers
         ans2label = json.load(open("data/vqa/trainval_ans2label.json"))
         label2ans = json.load(open("data/vqa/trainval_label2ans.json"))
         assert len(ans2label) == len(label2ans)
+
+        # Convert img list to dict
         imgid2img = {}
         for img_datum in img_data:
             imgid2img[img_datum['img_id']] = img_datum

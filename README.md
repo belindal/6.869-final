@@ -51,3 +51,4 @@ The validation result after training will be around **69.7%** to **70.2%**.
 python frcnn/extract_features_frcnn.py --image_dir img_dir --num_features 2048
 bash run/vqa_test.bash 0 vqa_lxr955_results --load snap/vqa/vqa_lxr955/BEST --interact
 ```
+Add `--load_frcnn` features to each of vqa commands in order use the frcnn (instead of pre-loaded features)

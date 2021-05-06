@@ -56,6 +56,8 @@ def parse_args():
     # Model Loading
     parser.add_argument('--load', type=str, default=None,
                         help='Load the model (usually the fine-tuned model).')
+    parser.add_argument('--load_frcnn', action='store_true', default=False,
+                        help='Load the pre-trained FRCNN model.')
     parser.add_argument('--loadLXMERT', dest='load_lxmert', type=str, default=None,
                         help='Load the pre-trained LXMERT model.')
     parser.add_argument('--loadLXMERTQA', dest='load_lxmert_qa', type=str, default=None,

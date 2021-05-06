@@ -22,6 +22,7 @@ import torch.nn.functional as F
 import sys
 import os
 from mmf.datasets.processors.frcnn_processor import ResizeShortestEdge, img_tensorize
+from tqdm import tqdm
 
 
 class Preprocess:
@@ -55,18 +56,20 @@ class Preprocess:
                 [0, max_size[-1] - size[1], 0, max_size[-2] - size[0]],
                 value=self.pad_value,
             )
-            for size, im in zip(image_sizes, images)
+            for size, im in tqdm(zip(image_sizes, images))
         ]
 
         return torch.stack(images), torch.tensor(image_sizes)
 
-    def __call__(self, images, single_image=False):
+    def __call__(self, images, single_image=False, ckpt_save_dir=None):
         with torch.no_grad():
             if not isinstance(images, list):
                 images = [images]
             if single_image:
                 assert len(images) == 1
-            for i in range(len(images)):
+            image_ids = []
+            for i in tqdm(range(len(images))):
+                image_ids.append(os.path.split(images[i])[1].replace('.jpg', ''))
                 if isinstance(images[i], torch.Tensor):
                     images.insert(i, images.pop(i).to(self.device).float())
                 elif not isinstance(images[i], torch.Tensor):
@@ -76,13 +79,22 @@ class Preprocess:
                         .to(self.device)
                         .float(),
                     )
+            # checkpoint
+            if ckpt_save_dir:
+                torch.save(images, os.path.join(ckpt_save_dir, 'loaded_images.pt'))
+
             # resize smallest edge
             raw_sizes = torch.tensor([im.shape[:2] for im in images])
             images = self.aug(images)
+            if ckpt_save_dir:
+                torch.save(images, os.path.join(ckpt_save_dir, 'resized_images.pt'))
 
             # flip rgb to bgr
-            for idx in range(len(images)):
+            for idx in tqdm(range(len(images))):
                 images[idx] = torch.flip(images[idx], [0])
+            if ckpt_save_dir:
+                torch.save(images, os.path.join(ckpt_save_dir, 'flipped_images.pt'))
+
             # transpose images and convert to torch tensors
             # images = [torch.as_tensor(i.astype("float32"))
             # .permute(2, 0, 1).to(self.device) for i in images]
@@ -96,10 +108,12 @@ class Preprocess:
                 raise NotImplementedError()
             # pad
             scales_yx = torch.true_divide(raw_sizes, sizes)
+            if ckpt_save_dir:
+                torch.save([image_ids, images, sizes, scales_yx], os.path.join(ckpt_save_dir, 'image_tensors.pt'))
             if single_image:
-                return images[0], sizes[0], scales_yx[0]
+                return image_ids[0], images[0], sizes[0], scales_yx[0]
             else:
-                return images, sizes, scales_yx
+                return image_ids, images, sizes, scales_yx
 
 
 def _scale_box(boxes, scale_yx):

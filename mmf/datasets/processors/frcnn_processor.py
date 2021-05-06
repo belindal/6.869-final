@@ -27,6 +27,7 @@ from mmf.common.registry import registry
 from mmf.datasets.processors.processors import BaseProcessor
 from mmf.utils.download import get_image_from_url
 from PIL import Image
+from tqdm import tqdm
 
 
 class ResizeShortestEdge:
@@ -42,7 +43,7 @@ class ResizeShortestEdge:
 
     def __call__(self, imgs: List[torch.Tensor]):
         img_augs = []
-        for img in imgs:
+        for img in tqdm(imgs):
             h, w = img.shape[:2]
             # later: provide list and randomly choose index for resize
             size = np.random.randint(
