@@ -96,12 +96,12 @@ class VQA:
                 t_total = int(batch_per_epoch * args.epochs)
                 print("BertAdam Total Iters: %d" % t_total)
                 from lxrt.optimization import BertAdam
-                self.optim = BertAdam(list(self.model.parameters()),
+                self.optim = BertAdam(list(p for p in self.model.parameters() if p.requires_grad),
                                     lr=args.lr,
                                     warmup=0.1,
                                     t_total=t_total)
             else:
-                self.optim = args.optimizer(self.model.parameters(), args.lr)
+                self.optim = args.optimizer([p for p in self.model.parameters() if p.requires_grad], args.lr)
         
         # Output Directory
         self.output = args.output
@@ -115,17 +115,19 @@ class VQA:
         for epoch in range(args.epochs):
             quesid2ans = {}
             for i, datum_tuple in iter_wrapper(enumerate(loader)):
-                if args.load_frcnn:
-                    (ques_id, images, sizes, scales_yx, sent, target) = datum_tuple
-                    model_inputs = {'images': images.cuda(), 'sizes': sizes.cuda(), 'scales_yx': scales_yx.cuda(), 'sent': sent}
-                else:
-                    (ques_id, feats, boxes, sent, target) = datum_tuple
-                    model_inputs = {'feat': feats.cuda(), 'pos': boxes.cuda(), 'sent': sent}
-
                 self.model.train()
                 self.optim.zero_grad()
 
-                logit = self.model(**model_inputs)
+                if args.load_frcnn:
+                    (ques_id, images, sizes, scales_yx, sent, target) = datum_tuple
+                    model_inputs = {'images': images.cuda(), 'sizes': sizes.cuda(), 'scales_yx': scales_yx.cuda(), 'sent': sent}
+                    self.model.frcnn.eval()
+                else:
+                    (ques_id, feats, boxes, sent, target) = datum_tuple
+                    model_inputs = {'feat': feats.cuda(), 'pos': boxes.cuda(), 'sent': sent}
+                target = target.cuda()
+
+                logit, frcnn_features = self.model(**model_inputs)
                 assert logit.dim() == target.dim() == 2
                 loss = self.bce_loss(logit, target)
                 loss = loss * logit.size(1)
@@ -177,7 +179,7 @@ class VQA:
                 (ques_id, feats, boxes, sent) = datum_tuple[:4]
                 model_inputs = {'feat': feats.cuda(), 'pos': boxes.cuda(), 'sent': sent}
             with torch.no_grad():
-                logit = self.model(feats, boxes, sent)
+                logit, frcnn_features = self.model(**model_inputs)
                 score, label = logit.max(1)
                 for qid, l in zip(ques_id, label.cpu().numpy()):
                     ans = dset.label2ans[l]
@@ -192,11 +194,13 @@ class VQA:
         quesid2ans = self.predict(eval_tuple, dump)
         return eval_tuple.evaluator.evaluate(quesid2ans)
     
-    def interact(self, imgid2img, ans2label, label2ans, adversarial=True):
+    def interact(self, imgid2img, ans2label, label2ans, adversarial=False, train=True):
         self.model.eval()
         n_iter = 10
         step_size = 1e-5  # TODO tune
         k=10
+        if adversarial:
+            for param in self.model.parameters(): param.requires_grad = True
         while True:
             imgid = input("Image ID: ")
             if imgid not in imgid2img:
@@ -231,7 +235,7 @@ class VQA:
                 sent = input("Question: ")
                 with torch.no_grad():
                     model_inputs['sent'] = [sent]
-                    logit = self.model(**model_inputs)
+                    logit, frcnn_features = self.model(**model_inputs)
                     score, label = logit.max(1)
                     topk_score, topk_label = logit.squeeze(0).topk(k)
                     ans = label2ans[label]
@@ -244,25 +248,29 @@ class VQA:
                         desired_target = input(f"Desired Target: ")
                     desired_label = torch.zeros(logit.size()).cuda()
                     desired_label[0,ans2label[desired_target]] = 1
+                    logit, frcnn_features = self.model(**model_inputs)
                     import pdb; pdb.set_trace()
                     for i in tqdm(range(n_iter)):
                         loss = self.bce_loss(logit, desired_label)
-                        gradient = torch.autograd.grad(loss, images)[0]
-                        images -= step_size * gradient
-                        model_inputs['images'] = images
-                        logit = self.model(**model_inputs)
+                        gradient = torch.autograd.grad(loss, model_inputs['images'])[0]
+                        model_inputs['images'] -= step_size * gradient
+                        logit, frcnn_features = self.model(**model_inputs)
                         topk_score, topk_label = logit.squeeze(0).topk(k, dim=1)
                         topk_labels_print = '\n\t'.join([f'{label2ans[label]}: {topk_score[idx]}' for idx, label in enumerate(topk_label)])
                         print(f"Step {i}/{n_iter} Top-K prediction:\n\t{topk_labels_print}")
                     import pdb; pdb.set_trace()
-                    np.save(images, os.path.join('adversarial_outputs', f'{imgid}.jpg'))
+                    np.save(model_inputs['images'], os.path.join('adversarial_outputs', f'{imgid}.jpg'))
                 
 
     @staticmethod
     def oracle_score(data_tuple):
         dset, loader, evaluator = data_tuple
         quesid2ans = {}
-        for i, (ques_id, feats, boxes, sent, target) in enumerate(loader):
+        for i, datum_tuple in enumerate(loader):
+            if args.load_frcnn:
+                (ques_id, images, sizes, scales_yx, sent, target) = datum_tuple
+            else:
+                (ques_id, feats, boxes, sent, target) = datum_tuple
             _, label = target.max(1)
             for qid, l in zip(ques_id, label.cpu().numpy()):
                 ans = dset.label2ans[l]
@@ -295,16 +303,17 @@ if __name__ == "__main__":
         img_data = []
         if args.load_frcnn:
             image_preprocess = Preprocess(vqa.frcnn_cfg)
-            img_ids, images, sizes, scales_yx = image_preprocess(glob(f"img_dir/*.jpg"))
-            assert len(img_ids) == len(images) == len(sizes) == len(scales_yx)
-            for i in range(len(img_ids)):
-                img_datum = {
-                    'img_id': img_ids[i],
-                    'images': images[i],
-                    'sizes': sizes[i],
-                    'scales_yx': scales_yx[i],
-                }
-                img_data.append(img_datum)
+            for fn in glob(f"img_dir/*.jpg")+glob(f"img_dir/*.png"):
+                img_ids, images, sizes, scales_yx = image_preprocess(fn)
+                assert len(img_ids) == len(images) == len(sizes) == len(scales_yx)
+                for i in range(len(img_ids)):
+                    img_datum = {
+                        'img_id': img_ids[i],
+                        'images': images[i],
+                        'sizes': sizes[i],
+                        'scales_yx': scales_yx[i],
+                    }
+                    img_data.append(img_datum)
         else:
             img_data.extend(load_obj_npy('frcnn_output'))
             # for split in ['minival']:

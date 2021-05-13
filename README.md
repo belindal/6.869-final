@@ -48,7 +48,13 @@ The validation result after training will be around **69.7%** to **70.2%**.
 
 
 ```
-python frcnn/extract_features_frcnn.py --image_dir img_dir --num_features 2048
+python frcnn/extract_features_frcnn.py --image_dir img_dir --num_features 2048 --visualize True
+python frcnn/visualize.py --image_path img_dir/001Bulbasaur.png --features_path frcnn_output/001Bulbasaur_full.npy
+python frcnn/visualize.py --image_path img_dir/ --features_path frcnn_output/  
+
 bash run/vqa_test.bash 0 vqa_lxr955_results --load snap/vqa/vqa_lxr955/BEST --interact
+
+bash run/vqa_finetune.bash 9 vqa_fewshot --load_frcnn --train fewshot_train --valid fewshot_train --load snap/vqa/vqa_lxr955/BEST --batchSize 1 --epochs 1   
+bash run/vqa_test.bash 9 vqa_fewshot --load_frcnn --load snap/vqa/vqa_fewshot/BEST --interact
 ```
 Add `--load_frcnn` features to each of vqa commands in order use the frcnn (instead of pre-loaded features)

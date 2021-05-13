@@ -26,7 +26,7 @@ from tqdm import tqdm
 
 
 class Preprocess:
-    def __init__(self, cfg):
+    def __init__(self, cfg, device=None):
         self.aug = ResizeShortestEdge(
             [cfg.input.min_size_test, cfg.input.min_size_test], cfg.input.max_size_test
         )
@@ -34,7 +34,10 @@ class Preprocess:
         self.size_divisibility = cfg.size_divisibility
         self.pad_value = cfg.PAD_VALUE
         self.max_image_size = cfg.input.max_size_test
-        self.device = cfg.model.device
+        if not device:
+            self.device = cfg.model.device
+        else:
+            self.device = device
         self.pixel_std = (
             torch.tensor(cfg.model.pixel_std)
             .to(self.device)
@@ -56,7 +59,7 @@ class Preprocess:
                 [0, max_size[-1] - size[1], 0, max_size[-2] - size[0]],
                 value=self.pad_value,
             )
-            for size, im in tqdm(zip(image_sizes, images))
+            for size, im in zip(image_sizes, images)
         ]
 
         return torch.stack(images), torch.tensor(image_sizes)
@@ -68,8 +71,8 @@ class Preprocess:
             if single_image:
                 assert len(images) == 1
             image_ids = []
-            for i in tqdm(range(len(images))):
-                image_ids.append(os.path.split(images[i])[1].replace('.jpg', ''))
+            for i in range(len(images)):
+                image_ids.append('.'.join(os.path.split(images[i])[1].split('.')[:-1]))
                 if isinstance(images[i], torch.Tensor):
                     images.insert(i, images.pop(i).to(self.device).float())
                 elif not isinstance(images[i], torch.Tensor):
@@ -90,7 +93,7 @@ class Preprocess:
                 torch.save(images, os.path.join(ckpt_save_dir, 'resized_images.pt'))
 
             # flip rgb to bgr
-            for idx in tqdm(range(len(images))):
+            for idx in range(len(images)):
                 images[idx] = torch.flip(images[idx], [0])
             if ckpt_save_dir:
                 torch.save(images, os.path.join(ckpt_save_dir, 'flipped_images.pt'))

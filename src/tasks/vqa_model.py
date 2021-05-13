@@ -65,16 +65,19 @@ class VQAModel(nn.Module):
             feat = []
             for idx in range(len(images)):
                 full_features, feat_list, info_list = self._process_features(output_dict, idx)
-                pos.append(info_list['normalized_boxes'])
+                boxes = info_list['normalized_boxes'].copy()
+                np.testing.assert_array_less(boxes, 1+1e-5)
+                np.testing.assert_array_less(-boxes, 0+1e-5)
+
+                pos.append(boxes)
                 feat.append(feat_list)
-            pos = np.stack(pos)
             feat = torch.stack(feat)
-            import pdb; pdb.set_trace()
+            pos = np.stack(pos)
             pos = torch.tensor(pos).to(feat.device)
         x = self.lxrt_encoder(sent, (feat, pos))
         logit = self.logit_fc(x)
 
-        return logit
+        return logit, full_features
 
     def _process_features(self, features, index, confidence_threshold=0):
         feature_keys = [
@@ -84,6 +87,7 @@ class VQAModel(nn.Module):
             "attr_probs",
             "boxes",
             "sizes",
+            "original_sizes",
             "preds_per_image",
             "roi_features",
             "normalized_boxes",
@@ -158,6 +162,7 @@ class VQAModel(nn.Module):
         probs = single_features["obj_probs"][: self.num_features].cpu().numpy()
         width = single_features["sizes"][1].item()
         height = single_features["sizes"][0].item()
+        normalized_boxes = single_features['normalized_boxes'][: self.num_features].cpu().numpy()
         info_list = {
             "bbox": boxes,
             "num_boxes": num_boxes,
@@ -165,6 +170,7 @@ class VQAModel(nn.Module):
             "cls_prob": probs,
             "image_width": width,
             "image_height": height,
+            "normalized_boxes": normalized_boxes,
         }
 
         return single_features, feat_list, info_list

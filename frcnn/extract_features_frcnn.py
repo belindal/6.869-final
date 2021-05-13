@@ -14,6 +14,7 @@ import os
 
 import numpy as np
 import torch
+from tqdm import tqdm
 
 from frcnn.extraction_utils import chunks, get_image_files
 from frcnn.frcnn_utils import Config
@@ -146,7 +147,7 @@ class FeatureExtractor:
     def get_frcnn_features(self, image_paths):
         image_preprocess = Preprocess(self.frcnn_cfg)
 
-        images, sizes, scales_yx = image_preprocess(image_paths)
+        image_ids, images, sizes, scales_yx = image_preprocess(image_paths)
 
         output_dict = self.frcnn(
             images,
@@ -294,7 +295,7 @@ class FeatureExtractor:
 
             file_names = copy.deepcopy(files)
 
-            for chunk, begin_idx in chunks(files, self.args.batch_size):
+            for chunk, begin_idx in tqdm(chunks(files, self.args.batch_size)):
                 try:
                     features = self.get_frcnn_features(chunk)
                     for idx, file_name in enumerate(chunk):

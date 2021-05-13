@@ -43,7 +43,7 @@ class ResizeShortestEdge:
 
     def __call__(self, imgs: List[torch.Tensor]):
         img_augs = []
-        for img in tqdm(imgs):
+        for img in imgs:
             h, w = img.shape[:2]
             # later: provide list and randomly choose index for resize
             size = np.random.randint(

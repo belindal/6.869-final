@@ -7,3 +7,6 @@ save/
 run/
 img_dir/
 frcnn_output/
+frcnn_vis/
+data/
+PokemonData/

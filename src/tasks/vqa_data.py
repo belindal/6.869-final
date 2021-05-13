@@ -27,6 +27,7 @@ IMG_DIR = 'img_dir/'
 VQA_DATA_ROOT = 'data/vqa/'
 MSCOCO_IMGFEAT_ROOT = 'data/mscoco_imgfeat/'
 SPLIT2NAME = {
+    'fewshot_train': 'fewshot_train',
     'train': 'train2014_4',
     'valid': 'val2014_4',
     'minival': 'val2014_4',
@@ -95,27 +96,29 @@ class VQARawTorchDataset(Dataset):
 
         # Loading raw images to img_data
         img_data = []
-        image_preprocess = Preprocess(frcnn_cfg)
+        image_preprocess = Preprocess(frcnn_cfg, device='cpu')
+        # TODO change this loading...
         for split in dataset.splits:
-            data_dir = os.path.join(IMG_DIR, SPLIT2NAME[split])
-            # for fn in tqdm(glob(f"{data_dir}/*.jpg")):
-            ckpt_save_dir = data_dir+"_tensorized"
-            if not os.path.exists(ckpt_save_dir):
-                os.makedirs(ckpt_save_dir, exist_ok=True)
-            if not os.path.exists(os.path.join(ckpt_save_dir, 'image_tensors.pt')):
-                img_ids, images, sizes, scales_yx = image_preprocess(glob(f"{data_dir}/*.jpg"), ckpt_save_dir=ckpt_save_dir)
-            else:
-                img_ids, images, sizes, scales_yx = torch.load(os.path.join(ckpt_save_dir, 'image_tensors.pt'))
-            # img_id = os.path.split(fn)[1].replace('.jpg', '')
-            assert len(img_ids) == len(images) == len(sizes) == len(scales_yx)
-            for i in range(len(img_ids)):
-                img_datum = {
-                    'img_id': img_ids[i],
-                    'images': images[i],
-                    'sizes': sizes[i],
-                    'scales_yx': scales_yx[i],
-                }
-                img_data.append(img_datum)
+            for fn in tqdm(glob(f"{os.path.join(IMG_DIR, SPLIT2NAME[split])}/*")):
+                # for fn in tqdm(glob(f"{data_dir}/*.jpg")):
+                # ckpt_save_dir = data_dir+"_tensorized"
+                ckpt_save_dir = None
+                if ckpt_save_dir and not os.path.exists(ckpt_save_dir):
+                    os.makedirs(ckpt_save_dir, exist_ok=True)
+                if not ckpt_save_dir or not os.path.exists(os.path.join(ckpt_save_dir, 'image_tensors.pt')):
+                    img_ids, images, sizes, scales_yx = image_preprocess(fn, ckpt_save_dir=ckpt_save_dir)
+                else:
+                    img_ids, images, sizes, scales_yx = torch.load(os.path.join(ckpt_save_dir, 'image_tensors.pt'))
+                # img_id = os.path.split(fn)[1].replace('.jpg', '')
+                assert len(img_ids) == len(images) == len(sizes) == len(scales_yx)
+                for i in range(len(img_ids)):
+                    img_datum = {
+                        'img_id': img_ids[i],
+                        'images': images[i],
+                        'sizes': sizes[i],
+                        'scales_yx': scales_yx[i],
+                    }
+                    img_data.append(img_datum)
         # Convert img list to dict
         self.imgid2img = {}
         for img_datum in img_data:
@@ -138,9 +141,11 @@ class VQARawTorchDataset(Dataset):
         img_id = datum['img_id']
         ques_id = datum['question_id']
         ques = datum['sent']
-        image = datum['image']
-        size = datum['size']
-        scale_yx = datum['scale_yx']
+
+        img_info = self.imgid2img[img_id]
+        image = img_info['images']
+        size = img_info['sizes']
+        scale_yx = img_info['scales_yx']
 
         # Provide label (target)
         if 'label' in datum:
@@ -209,16 +214,18 @@ class VQATorchDataset(Dataset):
         img_info = self.imgid2img[img_id]
         obj_num = img_info['num_boxes']
         feats = img_info['features'].copy()
-        boxes = img_info['boxes'].copy()
-        assert obj_num == len(boxes) == len(feats)
 
         # Normalize the boxes (to 0 ~ 1)
-        img_h, img_w = img_info['img_h'], img_info['img_w']
-        boxes = boxes.copy()
-        boxes[:, (0, 2)] /= img_w
-        boxes[:, (1, 3)] /= img_h
+        if 'normalized_boxes' not in img_info:
+            boxes = img_info['boxes'].copy()
+            img_h, img_w = img_info['img_h'], img_info['img_w']
+            boxes[:, (0, 2)] /= img_w
+            boxes[:, (1, 3)] /= img_h
+        else:
+            boxes = img_info['normalized_boxes'].copy()
         np.testing.assert_array_less(boxes, 1+1e-5)
         np.testing.assert_array_less(-boxes, 0+1e-5)
+        assert obj_num == len(boxes) == len(feats)
 
         # Provide label (target)
         if 'label' in datum:
