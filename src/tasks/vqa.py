@@ -107,7 +107,7 @@ class VQA:
         self.output = args.output
         os.makedirs(self.output, exist_ok=True)
 
-    def train(self, train_tuple, eval_tuple):
+    def train(self, train_tuple, eval_tuple=None):
         dset, loader, evaluator = train_tuple
         iter_wrapper = (lambda x: tqdm(x, total=len(loader))) if args.tqdm else (lambda x: x)
 
@@ -141,9 +141,10 @@ class VQA:
                     ans = dset.label2ans[l]
                     quesid2ans[qid.item()] = ans
 
+            train_score = evaluator.evaluate(quesid2ans) * 100.
             log_str = "\nEpoch %d: Train %0.2f\n" % (epoch, evaluator.evaluate(quesid2ans) * 100.)
 
-            if self.valid_tuple is not None:  # Do Validation
+            if eval_tuple is not None:  # Do Validation
                 valid_score = self.evaluate(eval_tuple)
                 if valid_score > best_valid:
                     best_valid = valid_score
@@ -152,11 +153,18 @@ class VQA:
                 log_str += "Epoch %d: Valid %0.2f\n" % (epoch, valid_score * 100.) + \
                            "Epoch %d: Best %0.2f\n" % (epoch, best_valid * 100.)
 
-            print(log_str, end='')
+                print(log_str, end='')
 
-            with open(self.output + "/log.log", 'a') as f:
-                f.write(log_str)
-                f.flush()
+                with open(self.output + "/log.log", 'a') as f:
+                    f.write(log_str)
+                    f.flush()
+                if abs(valid_score - 1) < 1e-4:
+                    break
+            else:
+                print(log_str, end='')
+                if abs(train_score - 100) < 1e-4:
+                    self.save("BEST")
+                    break
 
         self.save("LAST")
 

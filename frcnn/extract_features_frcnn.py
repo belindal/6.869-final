@@ -21,6 +21,7 @@ from frcnn.frcnn_utils import Config
 from frcnn.modeling_frcnn import GeneralizedRCNN
 from frcnn.processing_image import Preprocess
 
+DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 class FeatureExtractor:
 
@@ -132,6 +133,7 @@ class FeatureExtractor:
             frcnn_cfg = Config.from_pretrained(
                 self.CONFIG_URL.get(self.args.config_name, self.args.config_name)
             )
+        frcnn_cfg.model.device = DEVICE
         if self.args.model_file:
             frcnn = GeneralizedRCNN.from_pretrained(
                 self.args.model_file, config=frcnn_cfg
@@ -147,16 +149,20 @@ class FeatureExtractor:
     def get_frcnn_features(self, image_paths):
         image_preprocess = Preprocess(self.frcnn_cfg)
 
-        image_ids, images, sizes, scales_yx = image_preprocess(image_paths)
+        try:
+            image_ids, images, sizes, scales_yx = image_preprocess(image_paths)
 
-        output_dict = self.frcnn(
-            images,
-            sizes,
-            scales_yx=scales_yx,
-            padding=None,
-            max_detections=self.frcnn_cfg.max_detections,
-            return_tensors="pt",
-        )
+            output_dict = self.frcnn(
+                images.to(DEVICE),
+                sizes.to(DEVICE),
+                scales_yx=scales_yx.to(DEVICE),
+                padding=None,
+                max_detections=self.frcnn_cfg.max_detections,
+                return_tensors="pt",
+            )
+            # self.frcnn(images.to(DEVICE), sizes.to(DEVICE), scales_yx=scales_yx.to(DEVICE), padding=None, max_detections=self.frcnn_cfg.max_detections, return_tensors="pt",)
+        except:
+            import pdb; pdb.set_trace()
 
         return output_dict
 
@@ -259,6 +265,7 @@ class FeatureExtractor:
         probs = single_features["obj_probs"][: self.args.num_features].cpu().numpy()
         width = single_features["sizes"][1].item()
         height = single_features["sizes"][0].item()
+        normalized_boxes = single_features['normalized_boxes'][: self.args.num_features].cpu().numpy()
         info_list = {
             "bbox": boxes,
             "num_boxes": num_boxes,
@@ -266,6 +273,7 @@ class FeatureExtractor:
             "cls_prob": probs,
             "image_width": width,
             "image_height": height,
+            "normalized_boxes": normalized_boxes,
         }
 
         return single_features, feat_list, info_list

@@ -4,7 +4,6 @@ __pycache__/
 snap/
 data/
 save/
-run/
 img_dir/
 frcnn_output/
 frcnn_vis/

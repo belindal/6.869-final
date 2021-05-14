@@ -91,6 +91,10 @@ def parse_args():
     parser.add_argument("--multiGPU", action='store_const', default=False, const=True)
     parser.add_argument("--numWorkers", dest='num_workers', default=0)
 
+    # Fewshot arguments
+    parser.add_argument('--num_fewshot_updates', default=1, type=int)
+    parser.add_argument('--image_features', default=None, type=str)
+
     # Parse the arguments.
     args = parser.parse_args()
 

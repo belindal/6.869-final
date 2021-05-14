@@ -51,6 +51,7 @@ class VQAModel(nn.Module):
         :param leng: (b,) Type -- int numpy array
         :return: (b, num_answer) The logit of each answers.
         """
+        full_features = None
         if feat is None:
             assert images is not None and self.frcnn is not None
             output_dict = self.frcnn(

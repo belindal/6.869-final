@@ -62,10 +62,11 @@ def load_obj_npy(dirname):
         fts = np.load(img_info_fn.replace('_info', ''), allow_pickle=True)
         boxes = info['bbox']
         num_boxes = len(info['bbox'])
-        img_id = os.path.split(img_info_fn)[-1].replace('_info.npy', '')
+        img_id = info.get('img_id', os.path.split(img_info_fn)[-1].replace('_info.npy', ''))
         item = {
             'num_boxes': num_boxes,
             'boxes': boxes,
+            'normalized_boxes': info['normalized_boxes'],
             'features': fts,
             'img_id': img_id,
             'img_h': info['image_height'],

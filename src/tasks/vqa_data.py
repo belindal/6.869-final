@@ -1,5 +1,6 @@
 # coding=utf-8
 # Copyleft 2019 project LXRT.
+from typing import List
 
 import json
 import os
@@ -50,15 +51,18 @@ class VQADataset:
             "sent": "What is this photo taken looking through?"
         }
     """
-    def __init__(self, splits: str):
+    def __init__(self, splits: str, data: list = None):
         self.name = splits
         self.splits = splits.split(',')
 
         # Loading datasets
-        self.data = []
-        for split in self.splits:
-            self.data.extend(json.load(open("data/vqa/%s.json" % split)))
-        print("Load %d data from split(s) %s." % (len(self.data), self.name))
+        if data:
+            self.data = data
+        else:
+            self.data = []
+            for split in self.splits:
+                self.data.extend(json.load(open("data/vqa/%s.json" % split)))
+        # print("Load %d data from split(s) %s." % (len(self.data), self.name))
 
         # Convert list to dict (for evaluation)
         self.id2datum = {
@@ -165,7 +169,7 @@ FIELDNAMES = ["img_id", "img_h", "img_w", "objects_id", "objects_conf",
 FIELDNAMES would be keys in the dict returned by load_obj_tsv.
 """
 class VQATorchDataset(Dataset):
-    def __init__(self, dataset: VQADataset):
+    def __init__(self, dataset: VQADataset, imgfeat_dir: str = MSCOCO_IMGFEAT_ROOT, image_features: list = None):
         super().__init__()
         self.raw_dataset = dataset
 
@@ -177,14 +181,18 @@ class VQATorchDataset(Dataset):
             topk = None
 
         # Loading detection features to img_data
-        img_data = []
-        for split in dataset.splits:
-            # Minival is 5K images in MS COCO, which is used in evaluating VQA/LXMERT-pre-training.
-            # It is saved as the top 5K features in val2014_***.tsv
-            load_topk = 5000 if (split == 'minival' and topk is None) else topk
-            img_data.extend(load_obj_tsv(
-                os.path.join(MSCOCO_IMGFEAT_ROOT, '%s_obj36.tsv' % (SPLIT2NAME[split])),
-                topk=load_topk))
+        if not image_features:
+            img_data = []
+            for split in dataset.splits:
+                # Minival is 5K images in MS COCO, which is used in evaluating VQA/LXMERT-pre-training.
+                # It is saved as the top 5K features in val2014_***.tsv
+                load_topk = 5000 if (split == 'minival' and topk is None) else topk
+                img_data.extend(load_obj_tsv(
+                    os.path.join(imgfeat_dir, '%s_obj36.tsv' % (SPLIT2NAME[split])),
+                    topk=load_topk))
+            import pdb; pdb.set_trace()
+        else:
+            img_data = image_features
 
         # Convert img list to dict
         self.imgid2img = {}
@@ -197,8 +205,8 @@ class VQATorchDataset(Dataset):
             if datum['img_id'] in self.imgid2img:
                 self.data.append(datum)
 
-        print("Use %d data in torch dataset" % (len(self.data)))
-        print()
+        # print("Use %d data in torch dataset" % (len(self.data)))
+        # print()
 
     def __len__(self):
         return len(self.data)
@@ -223,8 +231,11 @@ class VQATorchDataset(Dataset):
             boxes[:, (1, 3)] /= img_h
         else:
             boxes = img_info['normalized_boxes'].copy()
-        np.testing.assert_array_less(boxes, 1+1e-5)
-        np.testing.assert_array_less(-boxes, 0+1e-5)
+        try:
+            np.testing.assert_array_less(boxes, 1+1e-5)
+            np.testing.assert_array_less(-boxes, 0+1e-5)
+        except:
+            import pdb; pdb.set_trace()
         assert obj_num == len(boxes) == len(feats)
 
         # Provide label (target)
@@ -249,7 +260,10 @@ class VQAEvaluator:
             label = datum['label']
             if ans in label:
                 score += label[ans]
-        return score / len(quesid2ans)
+        try:
+            return score / len(quesid2ans)
+        except:
+            import pdb; pdb.set_trace()
 
     def dump_result(self, quesid2ans: dict, path, human_readable: bool = False):
         """

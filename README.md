@@ -56,5 +56,9 @@ bash run/vqa_test.bash 0 vqa_lxr955_results --load snap/vqa/vqa_lxr955/BEST --in
 
 bash run/vqa_finetune.bash 9 vqa_fewshot --load_frcnn --train fewshot_train --valid fewshot_train --load snap/vqa/vqa_lxr955/BEST --batchSize 1 --epochs 1   
 bash run/vqa_test.bash 9 vqa_fewshot --load_frcnn --load snap/vqa/vqa_fewshot/BEST --interact
+
+
+bash run/vqa_fewshot_eval.bash 9 vqa_fewshot_pokemon --load snap/vqa/vqa_lxr955/BEST
+bash run/vqa_fewshot_eval.bash 9 vqa_fewshot_pokemon --load snap/vqa/vqa_lxr955/BEST --test val
 ```
 Add `--load_frcnn` features to each of vqa commands in order use the frcnn (instead of pre-loaded features)
