@@ -52,6 +52,7 @@ def split_image_data():
 
 def filter_image_data():
     # remove images we can't process
+    image_set = set()
     removed = 0
     for pokemon in tqdm(glob.glob(os.path.join(raw_images_dir, "*"))):
         for image in glob.glob(os.path.join(pokemon, "*")):
@@ -59,6 +60,13 @@ def filter_image_data():
                 removed += 1
                 print(image)
                 os.remove(image)
+            else:
+                image_name = ".".join(image.split(".")[0:-1])
+                if image_name in image_set:
+                    removed += 1
+                    print(image)
+                    os.remove(image)
+                image_set.add(image_name)
     print(f"Removed {removed} images")
 
 
@@ -89,7 +97,7 @@ def get_side_by_side_ex(pos_pokemon, pos_image, valid_neg_pokemons, all_pokemon_
         os.makedirs(os.path.join(raw_images_dir, split, 'side_by_side'), exist_ok=True)
     comb_imgpath = make_side_by_side_images(image_list[image_order[0]], image_list[image_order[1]], os.path.join(
         raw_images_dir, split, 'side_by_side',
-        f'{pos_pokemon}_{os.path.split(pos_image)[-1].split(".")[0]}_{neg_pokemon}_{os.path.split(neg_images[0])[-1].split(".")[0]}.png',
+        f'{pos_pokemon}_{".".join(os.path.split(pos_image)[-1].split(".")[0:-1])}_{neg_pokemon}_{".".join(os.path.split(neg_images[0])[-1].split(".")[0:-1])}.png',
     ))
     return {
         'img_id': comb_imgpath,
@@ -279,7 +287,7 @@ def main():
     # print("Making Questions")
     # make_qs_data()
     print("Extracting FRCNN Features")
-    get_frcnn_features(splits_to_process=['val'])
+    get_frcnn_features(splits_to_process=['train'])
 
 if __name__ == "__main__":
     main()

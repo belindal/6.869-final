@@ -291,3 +291,14 @@ class VQAEvaluator:
             json.dump(results, f, indent=4, sort_keys=True)
 
 
+class MetaVQADataset:
+    def __init__(self, support_tuples: list, query_tuples: list):
+        self.support_tuples = support_tuples
+        self.query_tuples = query_tuples
+        # self.support_loader = [tup[1] for tup in support_tuples]
+        # self.query_loader = [tup[1] for tup in query_tuples]
+        # self.support_set = self.support_loader.dataset.data
+        # self.query_set = self.query_loader.dataset.data
+
+    def __item__(self, i):
+        return self.support_tuples[i][1].dataset.data, self.query_tuples[i][1].dataset.data

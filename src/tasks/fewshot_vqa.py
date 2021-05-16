@@ -10,11 +10,12 @@ import torch
 import torch.nn as nn
 from torch.utils.data.dataloader import DataLoader
 from tqdm import tqdm
+import learn2learn as l2l
 
 from param import args
 from pretrain.qa_answer_table import load_lxmert_qa
 from tasks.vqa_model import VQAModel
-from tasks.vqa_data import VQADataset, VQATorchDataset, VQARawTorchDataset, VQAEvaluator, MSCOCO_IMGFEAT_ROOT, SPLIT2NAME
+from tasks.vqa_data import VQADataset, VQATorchDataset, VQARawTorchDataset, VQAEvaluator, MSCOCO_IMGFEAT_ROOT, SPLIT2NAME, MetaVQADataset
 from utils import load_obj_tsv, load_obj_npy
 from glob import glob
 import numpy as np
@@ -85,23 +86,37 @@ class MetaVQA(VQA):
 
         # Datasets
         if not interact and not test:
-            self.train_train_tuples, self.train_eval_tuples = get_data_tuple_lists(
-                args.train, bs=args.batch_size, shuffle=True, drop_last=True,
+            self.train_support_tuples, self.train_query_tuples = get_data_tuple_lists(
+                args.train, bs=args.batch_size, shuffle=True, drop_last=False,
                 frcnn_cfg=self.frcnn_cfg, imgfeat_dir=args.image_features,
             )
+            self.train_data = DataLoader(
+                MetaVQADataset(self.train_support_tuples, self.train_query_tuples), batch_size=1,
+                shuffle=False, num_workers=args.num_workers,
+                drop_last=False, pin_memory=True
+            )
             if args.valid != "":
-                self.valid_train_tuples, self.valid_eval_tuples = get_data_tuple_lists(
+                self.valid_support_tuples, self.valid_query_tuples = get_data_tuple_lists(
                     args.valid, bs=1024,
                     shuffle=False, drop_last=False,
                     frcnn_cfg=self.frcnn_cfg,  imgfeat_dir=args.image_features,
                 )
+                self.valid_data = DataLoader(
+                    MetaVQADataset(self.valid_support_tuples, self.valid_query_tuples), batch_size=1,
+                    shuffle=False, num_workers=args.num_workers,
+                    drop_last=False, pin_memory=True
+                )
             else:
-                self.valid_train_tuples, self.valid_eval_tuples = None, None
+                self.valid_support_tuples, self.valid_query_tuples = None, None
+                self.valid_data = None
         label2ans = json.load(open("data/vqa/trainval_label2ans.json"))
         num_answers = len(label2ans)
         
         # Model
         self.model = VQAModel(num_answers, frcnn=frcnn, frcnn_cfg=self.frcnn_cfg)
+        self.maml = None
+        if not args.interact and not args.test:
+            self.maml = l2l.algorithms.MAML(self.model, lr=(args.lr * 10))
 
         # Load pre-trained weights
         if args.load_lxmert is not None:
@@ -112,6 +127,7 @@ class MetaVQA(VQA):
         
         # GPU options
         self.model = self.model.cuda()
+        if self.maml: self.maml = self.maml.cuda()
         if args.multiGPU:
             self.model.lxrt_encoder.multi_gpu()
 
@@ -119,7 +135,7 @@ class MetaVQA(VQA):
         self.bce_loss = nn.BCEWithLogitsLoss()
         if not interact:
             # if 'bert' in args.optim:
-            #     batch_per_epoch = len(self.valid_train_tuples[0].loader)
+            #     batch_per_epoch = len(self.valid_support_tuples[0].loader)
             #     t_total = int(batch_per_epoch * args.epochs)
             #     print("BertAdam Total Iters: %d" % t_total)
             #     from lxrt.optimization import BertAdam
@@ -128,37 +144,180 @@ class MetaVQA(VQA):
             #                         warmup=0.1,
             #                         t_total=t_total)
             # else:
+            self.meta_optim = Adam([p for p in self.model.parameters() if p.requires_grad], args.meta_lr)
             self.optim = Adam([p for p in self.model.parameters() if p.requires_grad], args.lr)
         
         # Output Directory
         self.output = args.output
         os.makedirs(self.output, exist_ok=True)
     
-    def fewshot_evaluate(self, train_tuples: List[DataTuple], eval_tuples: List[DataTuple], num_updates: int = 1):
+    def compute_loss(
+        self, loader, use_tqdm=False
+    ):
+        # dset, loader, evaluator = train_tuple
+        iter_wrapper = (lambda x: tqdm(x, total=len(loader))) if use_tqdm else (lambda x: x)
+
+        losses = 0
+        for i, datum_tuple in iter_wrapper(enumerate(loader)):
+            if args.load_frcnn:
+                (ques_id, images, sizes, scales_yx, sent, target) = datum_tuple
+                model_inputs = {'images': images.cuda(), 'sizes': sizes.cuda(), 'scales_yx': scales_yx.cuda(), 'sent': sent}
+                self.model.frcnn.eval()
+            else:
+                (ques_id, feats, boxes, sent, target) = datum_tuple
+                model_inputs = {'feat': feats.cuda(), 'pos': boxes.cuda(), 'sent': sent}
+            target = target.cuda()
+
+            logit, frcnn_features = self.model(**model_inputs)
+            assert logit.dim() == target.dim() == 2
+            loss = self.bce_loss(logit, target)
+            loss = loss * logit.size(1)
+            losses += loss
+        return losses
+    
+
+    def fewshot_train(
+        self, train_support_tuples: List[DataTuple], train_query_tuples: List[DataTuple],
+        valid_support_tuples: List[DataTuple], valid_query_tuples: List[DataTuple], num_fs_updates: int = 1,
+    ):
+        # train_scores = []
+        train_losses = []
+        valid_scores = []
+        valid_losses = []
+        best_valid_score = 0
+        for epoch in range(args.meta_epochs):
+            # train_scores.append(0)
+            train_loss = 0
+
+            # TODO batch up tasks???
+            # for (train_support_batch, train_query_batch) in collate_support_query(train_support_tuples, train_query_tuples):
+            for (train_support_tuple, train_query_tuple) in tqdm(zip(train_support_tuples, train_query_tuples)):
+                task_model = self.maml.clone()  # torch.clone() for nn.Modules
+
+                self.meta_optim.zero_grad()
+                self.model.train()
+                _, train_support_loader, _ = train_support_tuple
+                adaptation_loss = self.compute_loss(train_support_loader, use_tqdm=False)
+                task_model.adapt(adaptation_loss, allow_unused=True)  # computes gradient, update task_model in-place
+                # Sum (over tasks)?
+                _, train_query_loader, _ = train_query_tuple
+                query_loss = self.compute_loss(train_query_loader, use_tqdm=False)
+                query_loss.backward()  # gradients w.r.t. maml.parameters()
+                # nn.utils.clip_grad_norm_(self.model.parameters(), 5.)
+                self.meta_optim.step()
+                train_loss += query_loss
+            train_loss /= len(train_support_tuples)
+            train_losses.append(train_loss)
+            print(f"=== EPOCH {epoch} ===")
+            print(f"(Approximate) train loss: {train_loss}")
+            
+            valid_score = self.fewshot_evaluate(valid_support_tuples, valid_query_tuples, num_fs_updates=num_fs_updates)
+            valid_scores.append(valid_score)
+            if valid_score > best_valid_score:
+                print("NEW BEST MODEL")
+                self.save("BEST")
+        self.save("LAST")
+
         """
-        Given paired train/eval data, trains model for `num_updates` updates on train data, then evaluates on eval data.
+        # task_num, setsz, c_, h, w = train_support_tuples.size()
+        querysz = train_query_tuples.size(1)
+
+        losses_q = [0 for _ in range(self.update_step + 1)]  # losses_q[i] is the loss on step i
+        corrects = [0 for _ in range(self.update_step + 1)]
+
+
+        for (train_support_tuple, train_query_tuple) in zip(train_support_tuples, train_query_tuples):
+            import pdb; pdb.set_trace()
+            dset, loader, evaluator = train_support_tuple
+
+            # 1. run the i-th task and compute loss for k=0
+            logits = self.net(train_support_tuples[i], vars=None, bn_training=True)
+            loss = F.cross_entropy(logits, train_support_tuples[i])
+            grad = torch.autograd.grad(loss, self.net.parameters())
+            fast_weights = list(map(lambda p: p[1] - self.update_lr * p[0], zip(grad, self.net.parameters())))
+
+            # this is the loss and accuracy before first update
+            with torch.no_grad():
+                # [setsz, nway]
+                logits_q = self.net(train_query_tuples[i], self.net.parameters(), bn_training=True)
+                loss_q = F.cross_entropy(logits_q, train_query_tuples[i])
+                losses_q[0] += loss_q
+
+                pred_q = F.softmax(logits_q, dim=1).argmax(dim=1)
+                correct = torch.eq(pred_q, train_query_tuples[i]).sum().item()
+                corrects[0] = corrects[0] + correct
+
+            # this is the loss and accuracy after the first update
+            with torch.no_grad():
+                # [setsz, nway]
+                logits_q = self.net(train_query_tuples[i], fast_weights, bn_training=True)
+                loss_q = F.cross_entropy(logits_q, train_query_tuples[i])
+                losses_q[1] += loss_q
+                # [setsz]
+                pred_q = F.softmax(logits_q, dim=1).argmax(dim=1)
+                correct = torch.eq(pred_q, train_query_tuples[i]).sum().item()
+                corrects[1] = corrects[1] + correct
+
+            for k in range(1,self.update_step):
+                # 1. run the i-th task and compute loss for k=1~K-1
+                logits = self.net(train_support_tuples[i], fast_weights, bn_training=True)
+                loss = F.cross_entropy(logits, train_support_tuples[i])
+                # 2. compute grad on theta_pi
+                grad = torch.autograd.grad(loss, fast_weights)
+                # 3. theta_pi = theta_pi - train_lr * grad
+                fast_weights = list(map(lambda p: p[1] - self.update_lr * p[0], zip(grad, fast_weights)))
+
+                logits_q = self.net(train_query_tuples[i], fast_weights, bn_training=True)
+                # loss_q will be overwritten and just keep the loss_q on last update step.
+                loss_q = F.cross_entropy(logits_q, train_query_tuples[i])
+                losses_q[k + 1] += loss_q
+
+                with torch.no_grad():
+                    pred_q = F.softmax(logits_q, dim=1).argmax(dim=1)
+                    correct = torch.eq(pred_q, train_query_tuples[i]).sum().item()  # convert to numpy
+                    corrects[k + 1] = corrects[k + 1] + correct
+
+        # end of all tasks
+        # sum over all losses on query set across all tasks
+        loss_q = losses_q[-1] / len(train_support_tuples)
+
+        # optimize theta parameters
+        self.meta_optim.zero_grad()
+        loss_q.backward()
+        # print('meta update')
+        # for p in self.net.parameters()[:5]:
+        # 	print(torch.norm(p).item())
+        self.meta_optim.step()
+
+        accs = np.array(corrects) / (querysz * len(train_support_tuples))
+
+        return accs
+        """
+    
+    def fewshot_evaluate(self, support_tuples: List[DataTuple], query_tuples: List[DataTuple], num_fs_updates: int = 1):
+        """
+        Given paired support/query data, trains model for `num_fs_updates` updates on train data, then evaluates on eval data.
         Returns evaluation accuracy.
         """
-        train_scores = []
-        eval_scores = []
-        # for epoch in range(args.meta_epochs):
-        for (train_tuple, eval_tuple) in tqdm(zip(train_tuples, eval_tuples)):
+        sup_scores = []
+        qu_scores = []
+        for (sup_tuple, query_tuple) in tqdm(zip(support_tuples, query_tuples)):
             self.optim = Adam([p for p in self.model.parameters() if p.requires_grad], args.lr)
 
             self.optim.zero_grad()
             ori_model = copy.deepcopy(self.model)
-            self.train(train_tuple, train_tuple, use_tqdm=False)
+            self.train(sup_tuple, sup_tuple, use_tqdm=False, epochs=num_fs_updates, do_save=False)
 
-            train_score = self.evaluate(train_tuple)
-            print(f"Train Score: {train_score}")
-            train_scores.append(train_score)
-            eval_score = self.evaluate(eval_tuple)
-            print(f"Evaluation Score: {eval_score}")
-            eval_scores.append(eval_score)
+            sup_score = self.evaluate(sup_tuple)
+            # print(f"Train Score: {train_score}")
+            sup_scores.append(sup_score)
+            q_score = self.evaluate(query_tuple)
+            # print(f"Evaluation Score: {eval_score}")
+            qu_scores.append(q_score)
             self.model = ori_model
-        print(f"Average Train Score: {sum(train_scores) / len(train_scores)}")
-        print(f"Average Evaluation Score: {sum(eval_scores) / len(eval_scores)}")
-        import pdb; pdb.set_trace()
+        print(f"Average Suppot Score: {sum(sup_scores) / len(sup_scores)}")
+        print(f"Average Query Score: {sum(qu_scores) / len(qu_scores)}")
+        return sum(qu_scores) / len(qu_scores)
 
 
 
@@ -218,14 +377,15 @@ if __name__ == "__main__":
         result = vqa.fewshot_evaluate(
             fewshot_val_train,
             fewshot_val_test,
-            num_updates = args.num_fewshot_updates
+            num_fs_updates = args.num_fewshot_updates
         )
         print(result)
     else:
-        if vqa.valid_train_tuples is not None:
-            print("Valid Oracle: %0.2f" % (vqa.fewshot_oracle_score(vqa.valid_train_tuples, vqa.valid_eval_tuples) * 100))
+        if vqa.valid_support_tuples is not None:
+            print("Valid Oracle: %0.2f" % (vqa.fewshot_evaluate(vqa.valid_support_tuples, vqa.valid_query_tuples) * 100))
         else:
             print("DO NOT USE VALIDATION")
-        vqa.fewshot_train(vqa.train_train_tuples, vqa.train_eval_tuples, vqa.valid_train_tuples, vqa.valid_eval_tples)
+        # vqa.fewshot_train(vqa.train_data, vqa.valid_data, num_updates = args.num_fewshot_updates)
+        vqa.fewshot_train(vqa.train_support_tuples, vqa.train_query_tuples, vqa.valid_support_tuples, vqa.valid_query_tuples, num_fs_updates=args.num_fewshot_updates)
 
 

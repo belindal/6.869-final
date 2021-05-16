@@ -94,6 +94,8 @@ def parse_args():
     # Fewshot arguments
     parser.add_argument('--num_fewshot_updates', default=1, type=int)
     parser.add_argument('--image_features', default=None, type=str)
+    parser.add_argument('--meta_epochs', default=10, type=int)
+    parser.add_argument('--meta_lr', default=1e-3, type=float)
 
     # Parse the arguments.
     args = parser.parse_args()

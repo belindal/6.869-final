@@ -107,26 +107,28 @@ class VQA:
         self.output = args.output
         os.makedirs(self.output, exist_ok=True)
 
-    def train(self, train_tuple, eval_tuple=None, use_tqdm=True):
+    def train(self, train_tuple, eval_tuple=None, use_tqdm=True, epochs=None, do_save=True):
         dset, loader, evaluator = train_tuple
         iter_wrapper = (lambda x: tqdm(x, total=len(loader))) if use_tqdm else (lambda x: x)
+        best_valid = 0
 
-        log_str= "Initial Evaluation\n"
-        if eval_tuple is not None:  # Do Validation
-            best_valid = self.evaluate(eval_tuple)
+        # log_str= "Initial Evaluation\n"
+        # if eval_tuple is not None:  # Do Validation
+        #     best_valid = self.evaluate(eval_tuple)
 
-            log_str += "Valid %0.2f\nBest %0.2f\n" % (best_valid * 100., best_valid * 100.)
+        #     log_str += "Valid %0.2f\nBest %0.2f\n" % (best_valid * 100., best_valid * 100.)
 
-            # print(log_str, end='')
+        #     # print(log_str, end='')
 
-            with open(self.output + "/log.log", 'a') as f:
-                f.write(log_str)
-                f.flush()
-            if abs(best_valid - 1) < 1e-4:
-                self.save("BEST")
-                self.save("LAST")
-                return
-        for epoch in range(args.epochs):
+        #     with open(self.output + "/log.log", 'a') as f:
+        #         f.write(log_str)
+        #         f.flush()
+        #     if abs(best_valid - 1) < 1e-4:
+        #         self.save("BEST")
+        #         self.save("LAST")
+        #         return
+        if not epochs: epochs = args.epochs
+        for epoch in range(epochs):
             quesid2ans = {}
             for i, datum_tuple in iter_wrapper(enumerate(loader)):
                 self.model.train()
@@ -163,7 +165,7 @@ class VQA:
                 valid_score = self.evaluate(eval_tuple)
                 if valid_score > best_valid:
                     best_valid = valid_score
-                    self.save("BEST")
+                    if do_save: self.save("BEST")
 
                 log_str += "Epoch %d: Valid %0.2f\n" % (epoch, valid_score * 100.) + \
                            "Epoch %d: Best %0.2f\n" % (epoch, best_valid * 100.)
@@ -178,10 +180,10 @@ class VQA:
             else:
                 # print(log_str, end='')
                 if abs(train_score - 100) < 1e-4:
-                    self.save("BEST")
+                    if do_save: self.save("BEST")
                     break
 
-        self.save("LAST")
+        if do_save: self.save("LAST")
 
     def predict(self, eval_tuple: DataTuple, dump=None):
         """
