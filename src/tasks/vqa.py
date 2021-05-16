@@ -107,11 +107,25 @@ class VQA:
         self.output = args.output
         os.makedirs(self.output, exist_ok=True)
 
-    def train(self, train_tuple, eval_tuple=None):
+    def train(self, train_tuple, eval_tuple=None, use_tqdm=True):
         dset, loader, evaluator = train_tuple
-        iter_wrapper = (lambda x: tqdm(x, total=len(loader))) if args.tqdm else (lambda x: x)
+        iter_wrapper = (lambda x: tqdm(x, total=len(loader))) if use_tqdm else (lambda x: x)
 
-        best_valid = 0.
+        log_str= "Initial Evaluation\n"
+        if eval_tuple is not None:  # Do Validation
+            best_valid = self.evaluate(eval_tuple)
+
+            log_str += "Valid %0.2f\nBest %0.2f\n" % (best_valid * 100., best_valid * 100.)
+
+            # print(log_str, end='')
+
+            with open(self.output + "/log.log", 'a') as f:
+                f.write(log_str)
+                f.flush()
+            if abs(best_valid - 1) < 1e-4:
+                self.save("BEST")
+                self.save("LAST")
+                return
         for epoch in range(args.epochs):
             quesid2ans = {}
             for i, datum_tuple in iter_wrapper(enumerate(loader)):
@@ -141,6 +155,7 @@ class VQA:
                     ans = dset.label2ans[l]
                     quesid2ans[qid.item()] = ans
 
+            if len(quesid2ans) == 0: import pdb; pdb.set_trace()
             train_score = evaluator.evaluate(quesid2ans) * 100.
             log_str = "\nEpoch %d: Train %0.2f\n" % (epoch, evaluator.evaluate(quesid2ans) * 100.)
 
@@ -153,7 +168,7 @@ class VQA:
                 log_str += "Epoch %d: Valid %0.2f\n" % (epoch, valid_score * 100.) + \
                            "Epoch %d: Best %0.2f\n" % (epoch, best_valid * 100.)
 
-                print(log_str, end='')
+                # print(log_str, end='')
 
                 with open(self.output + "/log.log", 'a') as f:
                     f.write(log_str)
@@ -161,7 +176,7 @@ class VQA:
                 if abs(valid_score - 1) < 1e-4:
                     break
             else:
-                print(log_str, end='')
+                # print(log_str, end='')
                 if abs(train_score - 100) < 1e-4:
                     self.save("BEST")
                     break

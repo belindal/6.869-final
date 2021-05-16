@@ -204,6 +204,8 @@ class VQATorchDataset(Dataset):
         for datum in self.raw_dataset.data:
             if datum['img_id'] in self.imgid2img:
                 self.data.append(datum)
+            else:
+                import pdb; pdb.set_trace()
 
         # print("Use %d data in torch dataset" % (len(self.data)))
         # print()
@@ -260,10 +262,7 @@ class VQAEvaluator:
             label = datum['label']
             if ans in label:
                 score += label[ans]
-        try:
-            return score / len(quesid2ans)
-        except:
-            import pdb; pdb.set_trace()
+        return score / len(quesid2ans)
 
     def dump_result(self, quesid2ans: dict, path, human_readable: bool = False):
         """

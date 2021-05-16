@@ -36,6 +36,11 @@ def get_data_tuple_lists(splits: str, bs:int, shuffle=False, drop_last=False, fr
         'train': [],
         'eval': []
     }
+    all_image_features = []
+    for pokemon in glob(os.path.join(imgfeat_dir, splits, "*")):
+        # img_feat_fn = os.path.join(imgfeat_dir, splits, pokemon_name)
+        image_features = load_obj_npy(pokemon)
+        all_image_features.extend(image_features)
     for data_fn in glob(f'{fewshot_qs_dir}/{splits}/*.json'):
         loaded_data = json.load(open(data_fn))
         pokemon_name = os.path.split(data_fn)[-1].replace('.json', '')
@@ -51,9 +56,7 @@ def get_data_tuple_lists(splits: str, bs:int, shuffle=False, drop_last=False, fr
                 # Minival is 5K images in MS COCO, which is used in evaluating VQA/LXMERT-pre-training.
                 # It is saved as the top 5K features in val2014_***.tsv
                 load_topk = 5000 #if (split == 'minival' and topk is None) else topk
-                img_feat_fn = os.path.join(imgfeat_dir, splits, pokemon_name)
-                image_features = load_obj_npy(img_feat_fn)
-                tset = VQATorchDataset(dset, imgfeat_dir=imgfeat_dir, image_features=image_features)
+                tset = VQATorchDataset(dset, imgfeat_dir=imgfeat_dir, image_features=all_image_features)
             evaluator = VQAEvaluator(dset)
             data_loader = DataLoader(
                 tset, batch_size=bs,
@@ -139,15 +142,23 @@ class MetaVQA(VQA):
         train_scores = []
         eval_scores = []
         # for epoch in range(args.meta_epochs):
-        ori_model = copy.deepcopy(self.model)
-        for (train_tuple, eval_tuple) in zip(train_tuples, eval_tuples):
-            self.train(train_tuple, train_tuple)
+        for (train_tuple, eval_tuple) in tqdm(zip(train_tuples, eval_tuples)):
+            self.optim = Adam([p for p in self.model.parameters() if p.requires_grad], args.lr)
 
+            self.optim.zero_grad()
+            ori_model = copy.deepcopy(self.model)
+            self.train(train_tuple, train_tuple, use_tqdm=False)
+
+            train_score = self.evaluate(train_tuple)
+            print(f"Train Score: {train_score}")
+            train_scores.append(train_score)
             eval_score = self.evaluate(eval_tuple)
             print(f"Evaluation Score: {eval_score}")
             eval_scores.append(eval_score)
             self.model = ori_model
+        print(f"Average Train Score: {sum(train_scores) / len(train_scores)}")
         print(f"Average Evaluation Score: {sum(eval_scores) / len(eval_scores)}")
+        import pdb; pdb.set_trace()
 
 
 
