@@ -179,12 +179,13 @@ class MetaVQA(VQA):
     def fewshot_train(
         self, train_support_tuples: List[DataTuple], train_query_tuples: List[DataTuple],
         valid_support_tuples: List[DataTuple], valid_query_tuples: List[DataTuple], num_fs_updates: int = 1,
+        init_eval_score: float = 0.0,
     ):
         # train_scores = []
         train_losses = []
         valid_scores = []
         valid_losses = []
-        best_valid_score = 0
+        best_valid_score = init_eval_score
         for epoch in range(args.meta_epochs):
             # train_scores.append(0)
             train_loss = 0
@@ -205,7 +206,7 @@ class MetaVQA(VQA):
                 query_loss.backward()  # gradients w.r.t. maml.parameters()
                 # nn.utils.clip_grad_norm_(self.model.parameters(), 5.)
                 self.meta_optim.step()
-                train_loss += query_loss
+                train_loss += query_loss.detach().cpu().item()
             train_loss /= len(train_support_tuples)
             train_losses.append(train_loss)
             print(f"=== EPOCH {epoch} ===")
@@ -216,6 +217,7 @@ class MetaVQA(VQA):
             if valid_score > best_valid_score:
                 print("NEW BEST MODEL")
                 self.save("BEST")
+                best_valid_score = valid_score
         self.save("LAST")
 
         """
@@ -315,9 +317,10 @@ class MetaVQA(VQA):
             # print(f"Evaluation Score: {eval_score}")
             qu_scores.append(q_score)
             self.model = ori_model
-        print(f"Average Suppot Score: {sum(sup_scores) / len(sup_scores)}")
-        print(f"Average Query Score: {sum(qu_scores) / len(qu_scores)}")
-        return sum(qu_scores) / len(qu_scores)
+        avg_q_score = sum(qu_scores) / len(qu_scores)
+        print(f"Average Support Score: {sum(sup_scores) / len(sup_scores)}")
+        print(f"Average Query Score: {avg_q_score}")
+        return avg_q_score
 
 
 
@@ -382,10 +385,14 @@ if __name__ == "__main__":
         print(result)
     else:
         if vqa.valid_support_tuples is not None:
-            print("Valid Oracle: %0.2f" % (vqa.fewshot_evaluate(vqa.valid_support_tuples, vqa.valid_query_tuples) * 100))
+            init_eval_score = vqa.fewshot_evaluate(vqa.valid_support_tuples, vqa.valid_query_tuples)
+            print("Valid Oracle: %0.2f" % (init_eval_score * 100))
         else:
+            init_eval_score = 0
             print("DO NOT USE VALIDATION")
         # vqa.fewshot_train(vqa.train_data, vqa.valid_data, num_updates = args.num_fewshot_updates)
-        vqa.fewshot_train(vqa.train_support_tuples, vqa.train_query_tuples, vqa.valid_support_tuples, vqa.valid_query_tuples, num_fs_updates=args.num_fewshot_updates)
+        vqa.fewshot_train(
+            vqa.train_support_tuples, vqa.train_query_tuples, vqa.valid_support_tuples, vqa.valid_query_tuples, num_fs_updates=args.num_fewshot_updates, init_eval_score=init_eval_score
+        )
 
 
