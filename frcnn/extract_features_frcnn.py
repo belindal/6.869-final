@@ -168,7 +168,7 @@ class FeatureExtractor:
 
     def _save_feature(self, file_name, full_features, feat_list, info_list):
         file_base_name = os.path.basename(file_name)
-        file_base_name = file_base_name.split(".")[0]
+        file_base_name = ".".join(file_base_name.split(".")[0:-1])
         full_feature_base_name = file_base_name + "_full.npy"
         feat_list_base_name = file_base_name + ".npy"
         info_list_base_name = file_base_name + "_info.npy"

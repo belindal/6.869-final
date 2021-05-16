@@ -69,9 +69,24 @@ bash run/vqa_fewshot_eval.bash 9 vqa_fewshot_pokemon --load snap/vqa/vqa_lxr955/
 ```
 Add `--load_frcnn` features to each of vqa commands in order use the frcnn (instead of pre-loaded features)
 
-Expected Results
-| | Avg. Score (No training) | Avg. Score (Training) |
+Expected Results (old dataset)
+| | No training | + Meta-learning |
 |---| ---- | ---- |
-| Valid Support | 82.7 | 82.7 |
-| Valid Query | 59 | 63 |
+| Avg. Valid Support Score | 82.7 | 86.7 |
+| Avg. Valid Query Score | 59 | 66 |
 
+New dataset
+===
+Average Support Score: 0.98
+Average Query Score: 0.536
+Average Support Score: 1.0
+Average Query Score: 0.616
+===
+Average Support Score: 0.96
+Average Query Score: 0.544
+Average Support Score: 0.98
+Average Query Score: 0.6080000000000001
+
+- Metalearning saved in `snap/vqa/vqa_fewshot_pokemon_fsupdates1/BEST`
+
+Expected Results (new dataset)
