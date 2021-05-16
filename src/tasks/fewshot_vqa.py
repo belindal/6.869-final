@@ -31,6 +31,10 @@ from torch.optim import Adam
 DataTuple = collections.namedtuple("DataTuple", 'dataset loader evaluator')
 
 fewshot_qs_dir = "./data/vqa/fewshot"
+img_raw_dir = "PokemonData"
+all_pokemon_list = []
+for split in ["train", "val", "test"]:
+    all_pokemon_list.extend([os.path.split(fp)[-1] for fp in glob(os.path.join(img_raw_dir, split, "*"))])
 
 def get_data_tuple_lists(splits: str, bs:int, shuffle=False, drop_last=False, frcnn_cfg=False, imgfeat_dir:str=None) -> DataTuple:
     tuples = {
@@ -38,10 +42,12 @@ def get_data_tuple_lists(splits: str, bs:int, shuffle=False, drop_last=False, fr
         'eval': []
     }
     all_image_features = []
+    print(f"Loading images from {os.path.join(imgfeat_dir, splits)}")
     for pokemon in glob(os.path.join(imgfeat_dir, splits, "*")):
         # img_feat_fn = os.path.join(imgfeat_dir, splits, pokemon_name)
         image_features = load_obj_npy(pokemon)
         all_image_features.extend(image_features)
+    print(f"Loading questions from {fewshot_qs_dir}/{splits}")
     for data_fn in glob(f'{fewshot_qs_dir}/{splits}/*.json'):
         loaded_data = json.load(open(data_fn))
         pokemon_name = os.path.split(data_fn)[-1].replace('.json', '')
@@ -144,8 +150,13 @@ class MetaVQA(VQA):
             #                         warmup=0.1,
             #                         t_total=t_total)
             # else:
-            self.meta_optim = Adam([p for p in self.model.parameters() if p.requires_grad], args.meta_lr)
-            self.optim = Adam([p for p in self.model.parameters() if p.requires_grad], args.lr)
+            # for n,p in self.model.named_parameters():
+            #     if n != "lxrt_encoder.model.bert.embeddings.word_embeddings.weight":
+            #         p.requires_grad = False
+            train_params = [p for p in self.model.parameters() if p.requires_grad]
+            # assert len(train_params) == 1
+            self.meta_optim = Adam(train_params, args.meta_lr)
+            self.optim = Adam(train_params, args.lr)
         
         # Output Directory
         self.output = args.output
@@ -187,6 +198,7 @@ class MetaVQA(VQA):
         valid_losses = []
         best_valid_score = init_eval_score
         for epoch in range(args.meta_epochs):
+            print(f"=== EPOCH {epoch} ===")
             # train_scores.append(0)
             train_loss = 0
 
@@ -198,8 +210,9 @@ class MetaVQA(VQA):
                 self.meta_optim.zero_grad()
                 self.model.train()
                 _, train_support_loader, _ = train_support_tuple
-                adaptation_loss = self.compute_loss(train_support_loader, use_tqdm=False)
-                task_model.adapt(adaptation_loss, allow_unused=True)  # computes gradient, update task_model in-place
+                for step in range(5):
+                    adaptation_loss = self.compute_loss(train_support_loader, use_tqdm=False)
+                    task_model.adapt(adaptation_loss, allow_unused=True, allow_nograd=True)  # computes gradient, update task_model in-place
                 # Sum (over tasks)?
                 _, train_query_loader, _ = train_query_tuple
                 query_loss = self.compute_loss(train_query_loader, use_tqdm=False)
@@ -209,10 +222,13 @@ class MetaVQA(VQA):
                 train_loss += query_loss.detach().cpu().item()
             train_loss /= len(train_support_tuples)
             train_losses.append(train_loss)
-            print(f"=== EPOCH {epoch} ===")
             print(f"(Approximate) train loss: {train_loss}")
             
-            valid_score = self.fewshot_evaluate(valid_support_tuples, valid_query_tuples, num_fs_updates=num_fs_updates)
+            valid_score_trials = []
+            for trials in range(5):
+                valid_score_trials.append(self.fewshot_evaluate(valid_support_tuples, valid_query_tuples, num_fs_updates=num_fs_updates))
+            valid_score = sum(valid_score_trials) / len(valid_score_trials)
+            print(f"Avg. valid score: {valid_score}")
             valid_scores.append(valid_score)
             if valid_score > best_valid_score:
                 print("NEW BEST MODEL")
@@ -322,6 +338,19 @@ class MetaVQA(VQA):
         print(f"Average Query Score: {avg_q_score}")
         return avg_q_score
 
+    def load(self, path, all_pokemon_list):
+        state_dict = torch.load("%s.pth" % path)
+        added_pokemon = False
+        if state_dict['lxrt_encoder.model.bert.embeddings.word_embeddings.weight'].size(0) > self.model.lxrt_encoder.model.bert.embeddings.word_embeddings.weight.size(0):
+            print("Loading pokemon vocab")
+            # Load new pokemon
+            vqa.model.add_new_tokens(all_pokemon_list)
+            added_pokemon = True
+        self.model.load_state_dict(state_dict, strict=False)
+        print("Load model from %s" % path)
+        if not added_pokemon:
+            print("Loading pokemon vocab")
+            vqa.model.add_new_tokens(all_pokemon_list)
 
 
 if __name__ == "__main__":
@@ -332,7 +361,10 @@ if __name__ == "__main__":
     # Load VQA model weights
     # Note: It is different from loading LXMERT pre-trained weights.
     if args.load is not None:
-        vqa.load(args.load)
+        if not args.add_pokemon_vocab:
+            all_pokemon_list = None
+        vqa.load(args.load, all_pokemon_list)
+        
 
     # Test or Train
     if args.interact:
@@ -377,15 +409,23 @@ if __name__ == "__main__":
         #     )
         # elif 'val' in args.test:
         fewshot_val_train, fewshot_val_test = get_data_tuple_lists(args.test, bs=950, shuffle=False, drop_last=False, imgfeat_dir=args.image_features)
-        result = vqa.fewshot_evaluate(
-            fewshot_val_train,
-            fewshot_val_test,
-            num_fs_updates = args.num_fewshot_updates
-        )
+        valid_score_trials = []
+        for trials in range(5):
+            valid_score_trials.append(vqa.fewshot_evaluate(
+                fewshot_val_train,
+                fewshot_val_test,
+                num_fs_updates = args.num_fewshot_updates
+            ))
+        result = sum(valid_score_trials) / len(valid_score_trials)
+        # vqa.fewshot_evaluate(fewshot_val_train, fewshot_val_test, num_fs_updates=args.num_fewshot_updates)
+        import pdb; pdb.set_trace()
         print(result)
     else:
         if vqa.valid_support_tuples is not None:
-            init_eval_score = vqa.fewshot_evaluate(vqa.valid_support_tuples, vqa.valid_query_tuples)
+            valid_score_trials = []
+            for trials in range(5):
+                valid_score_trials.append(vqa.fewshot_evaluate(vqa.valid_support_tuples, vqa.valid_query_tuples, num_fs_updates=args.num_fewshot_updates))
+            init_eval_score = sum(valid_score_trials) / len(valid_score_trials)
             print("Valid Oracle: %0.2f" % (init_eval_score * 100))
         else:
             init_eval_score = 0

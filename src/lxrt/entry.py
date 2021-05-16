@@ -15,12 +15,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import List
+
 import os
 
 import torch
 import torch.nn as nn
 
-from lxrt.tokenization import BertTokenizer
+# from lxrt.tokenization import BertTokenizer
+from transformers import BertTokenizer
 from lxrt.modeling import LXRTFeatureExtraction as VisualBertForLXRFeature, VISUAL_CONFIG
 
 
@@ -86,7 +89,7 @@ class LXRTEncoder(nn.Module):
         # Using the bert tokenizer
         self.tokenizer = BertTokenizer.from_pretrained(
             "bert-base-uncased",
-            do_lower_case=True
+            do_lower_case=True,
         )
 
         # Build LXRT Model

@@ -15,6 +15,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """PyTorch LXRT model."""
+from typing import Optional
 
 import copy
 import json
@@ -30,6 +31,7 @@ from io import open
 import torch
 from torch import nn
 from torch.nn import CrossEntropyLoss, SmoothL1Loss
+
 
 from .file_utils import cached_path
 
@@ -669,6 +671,7 @@ class BertPreTrainingHeads(nn.Module):
         seq_relationship_score = self.seq_relationship(pooled_output)
         return prediction_scores, seq_relationship_score
 
+from transformers import PreTrainedModel
 
 class BertPreTrainedModel(nn.Module):
     """ An abstract class to handle weights initialization and
@@ -676,6 +679,7 @@ class BertPreTrainedModel(nn.Module):
     """
     def __init__(self, config, *inputs, **kwargs):
         super(BertPreTrainedModel, self).__init__()
+        # super().__init__(config)
         if not isinstance(config, BertConfig):
             raise ValueError(
                 "Parameter config in `{}(config)` should be an instance of class `BertConfig`. "
@@ -831,6 +835,9 @@ class BertPreTrainedModel(nn.Module):
                                model.__class__.__name__, "\n\t".join(error_msgs)))
         return model
 
+    def get_output_embeddings(self):
+        return None
+
 
 class LXRTModel(BertPreTrainedModel):
     """LXRT Model."""
@@ -885,6 +892,214 @@ class LXRTModel(BertPreTrainedModel):
 
         return (lang_feats, visn_feats), pooled_output
 
+    def get_input_embeddings(self):
+        return self.embeddings.word_embeddings
+
+    def set_input_embeddings(self, value):
+        self.embeddings.word_embeddings = value
+
+    def resize_token_embeddings(self, new_num_tokens: Optional[int] = None) -> torch.nn.Embedding:
+        """
+        Resizes input token embeddings matrix of the model if :obj:`new_num_tokens != config.vocab_size`.
+
+        Takes care of tying weights embeddings afterwards if the model class has a :obj:`tie_weights()` method.
+
+        Arguments:
+            new_num_tokens (:obj:`int`, `optional`):
+                The number of new tokens in the embedding matrix. Increasing the size will add newly initialized
+                vectors at the end. Reducing the size will remove vectors from the end. If not provided or :obj:`None`,
+                just returns a pointer to the input tokens :obj:`torch.nn.Embedding` module of the model without doing
+                anything.
+
+        Return:
+            :obj:`torch.nn.Embedding`: Pointer to the input tokens Embeddings Module of the model.
+        """
+        model_embeds = self._resize_token_embeddings(new_num_tokens)
+        if new_num_tokens is None:
+            return model_embeds
+
+        # Update base model and current model config
+        self.config.vocab_size = new_num_tokens
+        self.vocab_size = new_num_tokens
+
+        # Tie weights again if needed
+        # self.tie_weights()
+
+        return model_embeds
+
+    def _resize_token_embeddings(self, new_num_tokens):
+        old_embeddings = self.get_input_embeddings()
+        new_embeddings = self._get_resized_embeddings(old_embeddings, new_num_tokens)
+        self.set_input_embeddings(new_embeddings)
+
+        # if word embeddings are not tied, make sure that lm head is resized as well
+        if self.get_output_embeddings() is not None and not self.config.tie_word_embeddings:
+            old_lm_head = self.get_output_embeddings()
+            new_lm_head = self._get_resized_lm_head(old_lm_head, new_num_tokens)
+            self.set_output_embeddings(new_lm_head)
+
+        return self.get_input_embeddings()
+
+    def _get_resized_embeddings(
+        self, old_embeddings: torch.nn.Embedding, new_num_tokens: Optional[int] = None
+    ) -> torch.nn.Embedding:
+        """
+        Build a resized Embedding Module from a provided token Embedding Module. Increasing the size will add newly
+        initialized vectors at the end. Reducing the size will remove vectors from the end
+
+        Args:
+            old_embeddings (:obj:`torch.nn.Embedding`):
+                Old embeddings to be resized.
+            new_num_tokens (:obj:`int`, `optional`):
+                New number of tokens in the embedding matrix.
+
+                Increasing the size will add newly initialized vectors at the end. Reducing the size will remove
+                vectors from the end. If not provided or :obj:`None`, just returns a pointer to the input tokens
+                :obj:`torch.nn.Embedding`` module of the model without doing anything.
+
+        Return:
+            :obj:`torch.nn.Embedding`: Pointer to the resized Embedding Module or the old Embedding Module if
+            :obj:`new_num_tokens` is :obj:`None`
+        """
+        if new_num_tokens is None:
+            return old_embeddings
+
+        old_num_tokens, old_embedding_dim = old_embeddings.weight.size()
+
+        if old_num_tokens == new_num_tokens:
+            return old_embeddings
+
+        if not isinstance(old_embeddings, nn.Embedding):
+            raise TypeError(
+                f"Old embeddings are of type {type(old_embeddings)}, which is not an instance of {nn.Embedding}."
+                f"You should either use a different resize function or make sure that `old_embeddings` are an instance of {nn.Embedding}."
+            )
+
+        # Build new embeddings
+        new_embeddings = nn.Embedding(new_num_tokens, old_embedding_dim).to(
+            old_embeddings.weight.device, dtype=old_embeddings.weight.dtype
+        )
+
+        # initialize all new embeddings (in particular added tokens)
+        self.init_bert_weights(new_embeddings)
+
+        # Copy token embeddings from the previous weights
+
+        # numbers of tokens to copy
+        n = min(old_num_tokens, new_num_tokens)
+        new_embeddings.weight.data[:n, :] = old_embeddings.weight.data[:n, :]
+
+        return new_embeddings
+    
+    def tie_weights(self):
+        """
+        Tie the weights between the input embeddings and the output embeddings.
+
+        If the :obj:`torchscript` flag is set in the configuration, can't handle parameter sharing so we are cloning
+        the weights instead.
+        """
+        output_embeddings = self.get_output_embeddings()
+        if output_embeddings is not None and self.config.tie_word_embeddings:
+            self._tie_or_clone_weights(output_embeddings, self.get_input_embeddings())
+
+        if self.config.is_encoder_decoder and self.config.tie_encoder_decoder:
+            if hasattr(self, self.base_model_prefix):
+                self = getattr(self, self.base_model_prefix)
+            self._tie_encoder_decoder_weights(self.encoder, self.decoder, self.base_model_prefix)
+        
+    def _tie_or_clone_weights(self, output_embeddings, input_embeddings):
+        """Tie or clone module weights depending of whether we are using TorchScript or not"""
+        if self.config.torchscript:
+            output_embeddings.weight = nn.Parameter(input_embeddings.weight.clone())
+        else:
+            output_embeddings.weight = input_embeddings.weight
+
+        if getattr(output_embeddings, "bias", None) is not None:
+            output_embeddings.bias.data = torch.nn.functional.pad(
+                output_embeddings.bias.data,
+                (
+                    0,
+                    output_embeddings.weight.shape[0] - output_embeddings.bias.shape[0],
+                ),
+                "constant",
+                0,
+            )
+        if hasattr(output_embeddings, "out_features") and hasattr(input_embeddings, "num_embeddings"):
+            output_embeddings.out_features = input_embeddings.num_embeddings
+
+    @staticmethod
+    def _tie_encoder_decoder_weights(encoder: nn.Module, decoder: nn.Module, base_model_prefix: str):
+        uninitialized_encoder_weights: List[str] = []
+        if decoder.__class__ != encoder.__class__:
+            logger.info(
+                f"{decoder.__class__} and {encoder.__class__} are not equal. In this case make sure that all encoder weights are correctly initialized."
+            )
+
+        def tie_encoder_to_decoder_recursively(
+            decoder_pointer: nn.Module,
+            encoder_pointer: nn.Module,
+            module_name: str,
+            uninitialized_encoder_weights: List[str],
+            depth=0,
+        ):
+            assert isinstance(decoder_pointer, nn.Module) and isinstance(
+                encoder_pointer, nn.Module
+            ), f"{decoder_pointer} and {encoder_pointer} have to be of type torch.nn.Module"
+            if hasattr(decoder_pointer, "weight"):
+                assert hasattr(encoder_pointer, "weight")
+                encoder_pointer.weight = decoder_pointer.weight
+                if hasattr(decoder_pointer, "bias"):
+                    assert hasattr(encoder_pointer, "bias")
+                    encoder_pointer.bias = decoder_pointer.bias
+                return
+
+            encoder_modules = encoder_pointer._modules
+            decoder_modules = decoder_pointer._modules
+            if len(decoder_modules) > 0:
+                assert (
+                    len(encoder_modules) > 0
+                ), f"Encoder module {encoder_pointer} does not match decoder module {decoder_pointer}"
+
+                all_encoder_weights = set([module_name + "/" + sub_name for sub_name in encoder_modules.keys()])
+                encoder_layer_pos = 0
+                for name, module in decoder_modules.items():
+                    if name.isdigit():
+                        encoder_name = str(int(name) + encoder_layer_pos)
+                        decoder_name = name
+                        if not isinstance(decoder_modules[decoder_name], type(encoder_modules[encoder_name])) and len(
+                            encoder_modules
+                        ) != len(decoder_modules):
+                            # this can happen if the name corresponds to the position in a list module list of layers
+                            # in this case the decoder has added a cross-attention that the encoder does not have
+                            # thus skip this step and subtract one layer pos from encoder
+                            encoder_layer_pos -= 1
+                            continue
+                    elif name not in encoder_modules:
+                        continue
+                    elif depth > 500:
+                        raise ValueError(
+                            "Max depth of recursive function `tie_encoder_to_decoder` reached. It seems that there is a circular dependency between two or more `nn.Modules` of your model."
+                        )
+                    else:
+                        decoder_name = encoder_name = name
+                    tie_encoder_to_decoder_recursively(
+                        decoder_modules[decoder_name],
+                        encoder_modules[encoder_name],
+                        module_name + "/" + name,
+                        uninitialized_encoder_weights,
+                        depth=depth + 1,
+                    )
+                    all_encoder_weights.remove(module_name + "/" + encoder_name)
+
+                uninitialized_encoder_weights += list(all_encoder_weights)
+
+        # tie weights recursively
+        tie_encoder_to_decoder_recursively(decoder, encoder, base_model_prefix, uninitialized_encoder_weights)
+        if len(uninitialized_encoder_weights) > 0:
+            logger.warning(
+                f"The following encoder weights were not tied to the decoder {uninitialized_encoder_weights}"
+            )
+
 
 class LXRTPretraining(BertPreTrainedModel):
     def __init__(self,
@@ -918,6 +1133,9 @@ class LXRTPretraining(BertPreTrainedModel):
 
         # Weight initialization
         self.apply(self.init_bert_weights)
+
+    def get_output_embeddings(self):
+        return self.cls.predictions.decoder
 
     def forward(self, input_ids, token_type_ids=None, attention_mask=None, masked_lm_labels=None,
                 visual_feats=None, pos=None, obj_labels=None, matched_label=None, ans=None):
@@ -1015,4 +1233,9 @@ class LXRTFeatureExtraction(BertPreTrainedModel):
             return feat_seq, pooled_output
         elif 'l' in self.mode or 'r' in self.mode:
             return feat_seq
+    
+    def resize_token_embeddings(self, new_num_tokens: Optional[int] = None) -> torch.nn.Embedding:
+        return self.bert.resize_token_embeddings(new_num_tokens)
 
+    def get_output_embeddings(self):
+        return None

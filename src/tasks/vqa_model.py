@@ -1,5 +1,6 @@
 # coding=utf-8
 # Copyleft 2019 project LXRT.
+from typing import List
 
 import torch.nn as nn
 import numpy as np
@@ -24,7 +25,7 @@ class VQAModel(nn.Module):
         # Build LXRT encoder
         self.lxrt_encoder = LXRTEncoder(
             args,
-            max_seq_length=MAX_VQA_LENGTH
+            max_seq_length=MAX_VQA_LENGTH,
         )
         hid_dim = self.lxrt_encoder.dim
         self.num_features = num_features
@@ -37,6 +38,12 @@ class VQAModel(nn.Module):
             nn.Linear(hid_dim * 2, num_answers)
         )
         self.logit_fc.apply(self.lxrt_encoder.model.init_bert_weights)
+
+    def add_new_tokens(self, new_tokens: List[str]):
+        new_tokens += [tok.lower() for tok in new_tokens]
+        self.lxrt_encoder.tokenizer.add_special_tokens({'additional_special_tokens': new_tokens})
+        # add new tokens to end
+        self.lxrt_encoder.model.resize_token_embeddings(len(self.lxrt_encoder.tokenizer))
 
     def forward(
         self, feat=None, pos=None, sent=None,

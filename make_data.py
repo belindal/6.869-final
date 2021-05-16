@@ -70,7 +70,7 @@ def filter_image_data():
     print(f"Removed {removed} images")
 
 
-def get_side_by_side_ex(pos_pokemon, pos_image, valid_neg_pokemons, all_pokemon_name_to_imgs):
+def get_side_by_side_ex(split, pos_pokemon, pos_image, valid_neg_pokemons, all_pokemon_name_to_imgs, qid, neg_pokemon=None, neg_image=None):
     """
     Returns example entry from putting positive and negative image side-by-side
     {
@@ -85,27 +85,29 @@ def get_side_by_side_ex(pos_pokemon, pos_image, valid_neg_pokemons, all_pokemon_
         "sent": "Which side is the `pos_pokemon`?"
     }
     """
-    neg_pokemon = random.choice(valid_neg_pokemons)
-    neg_image = random.choice(all_pokemon_name_to_imgs[neg_pokemon])
+    if not neg_image:
+        if not neg_pokemon:
+            neg_pokemon = random.choice(valid_neg_pokemons)
+        neg_image = random.choice(all_pokemon_name_to_imgs[neg_pokemon])
 
     # decide order of side by side
     image_order = [0,1]
     random.shuffle(image_order)
-    image_list = [neg_images[0], pos_image]
+    image_list = [neg_image, pos_image]
     # make side-by-side image
     if not os.path.exists(os.path.join(raw_images_dir, split, 'side_by_side')):
         os.makedirs(os.path.join(raw_images_dir, split, 'side_by_side'), exist_ok=True)
     comb_imgpath = make_side_by_side_images(image_list[image_order[0]], image_list[image_order[1]], os.path.join(
         raw_images_dir, split, 'side_by_side',
-        f'{pos_pokemon}_{".".join(os.path.split(pos_image)[-1].split(".")[0:-1])}_{neg_pokemon}_{".".join(os.path.split(neg_images[0])[-1].split(".")[0:-1])}.png',
+        f'{pos_pokemon}_{".".join(os.path.split(pos_image)[-1].split(".")[0:-1])}_{neg_pokemon}_{".".join(os.path.split(neg_image)[-1].split(".")[0:-1])}.png',
     ))
     return {
         'img_id': comb_imgpath,
         'label': {'left' if image_order[0] == 1 else 'right': 1},
-        'question_id': 7,
+        'question_id': qid,
         'question_type': f'Which side is the',
         'sent': f'Which side is the {pos_pokemon}?',
-    }
+    }, neg_pokemon, neg_image
 
 
 def make_qs_data():
@@ -131,8 +133,8 @@ def make_qs_data():
     for split in splits:
         split_to_pokemon[split] = []
         for pokemon in glob.glob(os.path.join(raw_images_dir, split, "*")):
-            if pokemon == 'side_by_side': continue
             pokemon_name = os.path.split(pokemon)[-1]
+            if pokemon_name == 'side_by_side': continue
             split_to_pokemon[split].append(pokemon_name)
             all_pokemon_names.append(pokemon_name)
             all_pokemon_name_to_imgs[pokemon_name] = list(glob.glob(os.path.join(pokemon, "*")))
@@ -156,13 +158,13 @@ def make_qs_data():
                 'question_type': f'Is this a',
                 'sent': f'Is this a {pokemon}?',
             })
-            fewshot_data['train'].append({
-                'img_id': pos_images[0],
-                'label': {'no': 1},
-                'question_id': 2,
-                'question_type': f'Is this a',
-                'sent': f'Is this a {random.choice(valid_neg_pokemons)}?',
-            })
+            # fewshot_data['train'].append({
+            #     'img_id': pos_images[0],
+            #     'label': {'no': 1},
+            #     'question_id': 2,
+            #     'question_type': f'Is this a',
+            #     'sent': f'Is this a {random.choice(valid_neg_pokemons)}?',
+            # })
             fewshot_data['train'].append({
                 'img_id': random.choice(all_pokemon_name_to_imgs[random.choice(valid_neg_pokemons)]),
                 'label': {'no': 1},
@@ -170,8 +172,9 @@ def make_qs_data():
                 'question_type': f'Is this a',
                 'sent': f'Is this a {pokemon}?',
             })
-            fewshot_data['train'].append(get_side_by_side_ex(pokemon, pos_images[0], valid_neg_pokemons, all_pokemon_name_to_imgs))
+            # fewshot_data['train'].append(get_side_by_side_ex(pokemon, pos_images[0], valid_neg_pokemons, all_pokemon_name_to_imgs))
             # make eval data
+            # Image generalization question
             fewshot_data['eval'].append({
                 'img_id': pos_images[1],
                 'label': {'yes': 1},
@@ -179,13 +182,13 @@ def make_qs_data():
                 'question_type': f'Is this a',
                 'sent': f'Is this a {pokemon}?',
             })
-            fewshot_data['eval'].append({
-                'img_id': pos_images[1],
-                'label': {'no': 1},
-                'question_id': 5,
-                'question_type': f'Is this a',
-                'sent': f'Is this a {random.choice(valid_neg_pokemons)}?',
-            })
+            # fewshot_data['eval'].append({
+            #     'img_id': pos_images[1],
+            #     'label': {'no': 1},
+            #     'question_id': 5,
+            #     'question_type': f'Is this a',
+            #     'sent': f'Is this a {random.choice(valid_neg_pokemons)}?',
+            # })
             fewshot_data['eval'].append({
                 'img_id': random.choice(all_pokemon_name_to_imgs[random.choice(valid_neg_pokemons)]),
                 'label': {'no': 1},
@@ -193,7 +196,20 @@ def make_qs_data():
                 'question_type': f'Is this a',
                 'sent': f'Is this a {pokemon}?',
             })
-            fewshot_data['eval'].append(get_side_by_side_ex(pokemon, pos_images[1], valid_neg_pokemons, all_pokemon_name_to_imgs))
+            # Distinguishing question (+possible image generalization)
+            comb_ex1, neg_pokemon1, neg_image1 = get_side_by_side_ex(split, pokemon, pos_images[0], valid_neg_pokemons, all_pokemon_name_to_imgs, 7)
+            comb_ex2, neg_pokemon2, neg_image2 = get_side_by_side_ex(split, pokemon, pos_images[1], valid_neg_pokemons, all_pokemon_name_to_imgs, 8)
+            fewshot_data['eval'].append(comb_ex1)
+            fewshot_data['eval'].append(comb_ex2)
+            # Mutual exclusivity question
+            mut_exc_ex = {
+                'img_id': comb_ex1['img_id'],
+                'label': {'left' if comb_ex1['label'] == 'right' else 'right': 1},
+                'question_id': 9,
+                'question_type': comb_ex1['question_type'],
+                'sent': f'Which side is the {neg_pokemon1}?'
+            }
+            fewshot_data['eval'].append(mut_exc_ex)
             save_fn = os.path.join(output_dir, f'{pokemon}.json')
             json.dump(fewshot_data, open(save_fn, "w"), indent=4)
 

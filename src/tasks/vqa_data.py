@@ -29,10 +29,10 @@ VQA_DATA_ROOT = 'data/vqa/'
 MSCOCO_IMGFEAT_ROOT = 'data/mscoco_imgfeat/'
 SPLIT2NAME = {
     'fewshot_train': 'fewshot_train',
-    'train': 'train2014_4',
-    'valid': 'val2014_4',
-    'minival': 'val2014_4',
-    'nominival': 'val2014_4',
+    'train': 'train2014',
+    'valid': 'val2014',
+    'minival': 'val2014',
+    'nominival': 'val2014',
     'test': 'test2015',
 }
 
@@ -190,7 +190,7 @@ class VQATorchDataset(Dataset):
                 img_data.extend(load_obj_tsv(
                     os.path.join(imgfeat_dir, '%s_obj36.tsv' % (SPLIT2NAME[split])),
                     topk=load_topk))
-            import pdb; pdb.set_trace()
+            # import pdb; pdb.set_trace()
         else:
             img_data = image_features
 
@@ -204,8 +204,8 @@ class VQATorchDataset(Dataset):
         for datum in self.raw_dataset.data:
             if datum['img_id'] in self.imgid2img:
                 self.data.append(datum)
-            else:
-                import pdb; pdb.set_trace()
+            # else:
+            #     import pdb; pdb.set_trace()
 
         # print("Use %d data in torch dataset" % (len(self.data)))
         # print()
