@@ -1,4 +1,4 @@
-# LXMERT: Learning Cross-Modality Encoder Representations from Transformers
+# Learning to Learn Few-Shot VQA
 
 ### General 
 The code requires **Python 3** and please install the Python dependencies with the command:
@@ -47,23 +47,31 @@ The **logs** and **model snapshots** will be saved under folder `snap/vqa/vqa_lx
 The validation result after training will be around **69.7%** to **70.2%**. 
 
 
-```
+Make data and get FRCNN features
+```bash
+python make_data.py
 python frcnn/extract_features_frcnn.py --image_dir img_dir --num_features 2048 --visualize True
 python frcnn/visualize.py --image_path img_dir/001Bulbasaur.png --features_path frcnn_output/001Bulbasaur_full.npy
-python frcnn/visualize.py --image_path img_dir/ --features_path frcnn_output/  
+python frcnn/visualize.py --image_path img_dir/ --features_path frcnn_output/ 
+```
 
+```bash
 bash run/vqa_test.bash 0 vqa_lxr955_results --load snap/vqa/vqa_lxr955/BEST --interact
 
 bash run/vqa_finetune.bash 9 vqa_fewshot --load_frcnn --train fewshot_train --valid fewshot_train --load snap/vqa/vqa_lxr955/BEST --batchSize 1 --epochs 1   
 bash run/vqa_test.bash 9 vqa_fewshot --load_frcnn --load snap/vqa/vqa_fewshot/BEST --interact
+```
 
-
+Few-shot training (metalearning) and eval
+```bash
 bash run/vqa_fewshot_eval.bash 9 vqa_fewshot_pokemon --load snap/vqa/vqa_lxr955/BEST
 bash run/vqa_fewshot_eval.bash 9 vqa_fewshot_pokemon --load snap/vqa/vqa_lxr955/BEST --test val
 ```
-| Avg. Score (No training)
-=======================
-Train | 1.0
-Evaluation | 0.62
-
 Add `--load_frcnn` features to each of vqa commands in order use the frcnn (instead of pre-loaded features)
+
+Expected Results
+| | Avg. Score (No training) | Avg. Score (Training) |
+|---| ---- | ---- |
+| Valid Support | 82.7 | 82.7 |
+| Valid Query | 59 | 63 |
+
