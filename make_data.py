@@ -303,7 +303,7 @@ def main():
     # print("Making Questions")
     # make_qs_data()
     print("Extracting FRCNN Features")
-    get_frcnn_features(splits_to_process=['train'])
+    get_frcnn_features(splits_to_process=['test'])
 
 if __name__ == "__main__":
     main()

@@ -64,8 +64,12 @@ bash run/vqa_test.bash 9 vqa_fewshot --load_frcnn --load snap/vqa/vqa_fewshot/BE
 
 Few-shot training (metalearning) and eval
 ```bash
-bash run/vqa_fewshot_eval.bash 9 vqa_fewshot_pokemon --load snap/vqa/vqa_lxr955/BEST
+bash run/vqa_fewshot_eval.bash 11 vqa_fewshot_pokemon --load snap/vqa/vqa_lxr955/BEST --meta_epochs 50
+bash run/vqa_fewshot_eval.bash 9 vqa_fewshot_pokemon_add_toks --load snap/vqa/vqa_lxr955/BEST --meta_epochs 50 --add_pokemon_vocab
 bash run/vqa_fewshot_eval.bash 9 vqa_fewshot_pokemon --load snap/vqa/vqa_lxr955/BEST --test val
+
+bash run/vqa_fewshot_eval.bash 11 vqa_fewshot_pokemon --load snap/vqa/vqa_lxr955/BEST --meta_epochs 50 --meta_lr 1e-3
+bash run/vqa_fewshot_eval.bash 9 vqa_fewshot_pokemon_train_toks_only --load snap/vqa/vqa_lxr955/BEST --add_pokemon_vocab --meta_word_embeds_only --meta_epochs 50 --meta_lr 1e-3
 ```
 Add `--load_frcnn` features to each of vqa commands in order use the frcnn (instead of pre-loaded features)
 

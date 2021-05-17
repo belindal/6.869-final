@@ -3,6 +3,7 @@
 
 import os
 import collections
+import copy
 
 import torch
 import torch.nn as nn
@@ -107,7 +108,7 @@ class VQA:
         self.output = args.output
         os.makedirs(self.output, exist_ok=True)
 
-    def train(self, train_tuple, eval_tuple=None, use_tqdm=True, epochs=None, do_save=True):
+    def train(self, train_tuple, eval_tuple=None, use_tqdm=True, epochs=None, do_save=True, do_break=False):
         dset, loader, evaluator = train_tuple
         iter_wrapper = (lambda x: tqdm(x, total=len(loader))) if use_tqdm else (lambda x: x)
         best_valid = 0
@@ -131,8 +132,10 @@ class VQA:
         for epoch in range(epochs):
             quesid2ans = {}
             for i, datum_tuple in iter_wrapper(enumerate(loader)):
+                old_model = copy.deepcopy(self.model)
                 self.model.train()
                 self.optim.zero_grad()
+                if do_break: import pdb; pdb.set_trace()
 
                 if args.load_frcnn:
                     (ques_id, images, sizes, scales_yx, sent, target) = datum_tuple
@@ -149,8 +152,10 @@ class VQA:
                 loss = loss * logit.size(1)
 
                 loss.backward()
+                # for k in self.model.state_dict(): assert (self.model.state_dict()[k] == old_model.state_dict()[k]).all()
                 nn.utils.clip_grad_norm_(self.model.parameters(), 5.)
                 self.optim.step()
+                # if do_break: import pdb; pdb.set_trace()
 
                 score, label = logit.max(1)
                 for qid, l in zip(ques_id, label.cpu().numpy()):

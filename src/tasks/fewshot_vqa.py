@@ -16,6 +16,7 @@ from param import args
 from pretrain.qa_answer_table import load_lxmert_qa
 from tasks.vqa_model import VQAModel
 from tasks.vqa_data import VQADataset, VQATorchDataset, VQARawTorchDataset, VQAEvaluator, MSCOCO_IMGFEAT_ROOT, SPLIT2NAME, MetaVQADataset
+from src.lxrt.entry import convert_sents_to_features
 from utils import load_obj_tsv, load_obj_npy
 from glob import glob
 import numpy as np
@@ -122,7 +123,10 @@ class MetaVQA(VQA):
         self.model = VQAModel(num_answers, frcnn=frcnn, frcnn_cfg=self.frcnn_cfg)
         self.maml = None
         if not args.interact and not args.test:
-            self.maml = l2l.algorithms.MAML(self.model, lr=(args.lr * 10))
+            if args.meta_word_embeds_only:
+                self.maml = l2l.algorithms.MAML(self.model.lxrt_encoder.model.bert.embeddings.word_embeddings, lr=(args.meta_lr))
+            else:
+                self.maml = l2l.algorithms.MAML(self.model, lr=(args.meta_lr))
 
         # Load pre-trained weights
         if args.load_lxmert is not None:
@@ -153,17 +157,19 @@ class MetaVQA(VQA):
             # for n,p in self.model.named_parameters():
             #     if n != "lxrt_encoder.model.bert.embeddings.word_embeddings.weight":
             #         p.requires_grad = False
-            train_params = [p for p in self.model.parameters() if p.requires_grad]
-            # assert len(train_params) == 1
-            self.meta_optim = Adam(train_params, args.meta_lr)
-            self.optim = Adam(train_params, args.lr)
+            base_trainable_params = [p for p in self.model.parameters() if p.requires_grad]
+            if self.maml:
+                meta_trainable_params = [p for p in self.maml.parameters() if p.requires_grad]
+                # assert len(base_trainable_params) == 1
+                self.meta_optim = Adam(meta_trainable_params, args.meta_lr)
+            self.optim = Adam(base_trainable_params, args.lr)
         
         # Output Directory
         self.output = args.output
         os.makedirs(self.output, exist_ok=True)
     
     def compute_loss(
-        self, loader, use_tqdm=False
+        self, model, loader, use_tqdm=False
     ):
         # dset, loader, evaluator = train_tuple
         iter_wrapper = (lambda x: tqdm(x, total=len(loader))) if use_tqdm else (lambda x: x)
@@ -173,13 +179,20 @@ class MetaVQA(VQA):
             if args.load_frcnn:
                 (ques_id, images, sizes, scales_yx, sent, target) = datum_tuple
                 model_inputs = {'images': images.cuda(), 'sizes': sizes.cuda(), 'scales_yx': scales_yx.cuda(), 'sent': sent}
-                self.model.frcnn.eval()
+                model.frcnn.eval()
             else:
                 (ques_id, feats, boxes, sent, target) = datum_tuple
                 model_inputs = {'feat': feats.cuda(), 'pos': boxes.cuda(), 'sent': sent}
             target = target.cuda()
 
-            logit, frcnn_features = self.model(**model_inputs)
+            if args.meta_word_embeds_only:
+                train_features = convert_sents_to_features(sent, self.model.lxrt_encoder.max_seq_length, self.model.lxrt_encoder.tokenizer)
+                input_ids = torch.tensor([f.input_ids for f in train_features], dtype=torch.long).cuda()
+                word_embeds = model(input_ids)
+                model_inputs['precomputed_word_embeddings'] = word_embeds
+                logit, frcnn_features = self.model(**model_inputs)
+            else:
+                logit, frcnn_features = model(**model_inputs)
             assert logit.dim() == target.dim() == 2
             loss = self.bce_loss(logit, target)
             loss = loss * logit.size(1)
@@ -189,7 +202,7 @@ class MetaVQA(VQA):
 
     def fewshot_train(
         self, train_support_tuples: List[DataTuple], train_query_tuples: List[DataTuple],
-        valid_support_tuples: List[DataTuple], valid_query_tuples: List[DataTuple], num_fs_updates: int = 1,
+        valid_support_tuples: List[DataTuple] = None, valid_query_tuples: List[DataTuple] = None, num_fs_updates: int = 1,
         init_eval_score: float = 0.0,
     ):
         # train_scores = []
@@ -198,42 +211,62 @@ class MetaVQA(VQA):
         valid_losses = []
         best_valid_score = init_eval_score
         for epoch in range(args.meta_epochs):
+            self.optim = Adam([p for p in self.model.parameters() if p.requires_grad], args.lr)
             print(f"=== EPOCH {epoch} ===")
             # train_scores.append(0)
             train_loss = 0
+            old_model = copy.deepcopy(self.model)
+            tqdm_bar = tqdm(zip(train_support_tuples, train_query_tuples))
 
             # TODO batch up tasks???
             # for (train_support_batch, train_query_batch) in collate_support_query(train_support_tuples, train_query_tuples):
-            for (train_support_tuple, train_query_tuple) in tqdm(zip(train_support_tuples, train_query_tuples)):
+            for (train_support_tuple, train_query_tuple) in tqdm_bar:
+                # import pdb; pdb.set_trace()
+                # self.train(train_support_tuple, epochs=1, do_save=False, do_break=True)
+                # loss = self.compute_loss(self.model, train_query_tuple[1]); loss.backward(); self.optim.step()
+                # for k in self.model.state_dict(): assert (self.model.state_dict()[k] == old_model.state_dict()[k]).all()
                 task_model = self.maml.clone()  # torch.clone() for nn.Modules
 
-                self.meta_optim.zero_grad()
                 self.model.train()
+                self.meta_optim.zero_grad()
                 _, train_support_loader, _ = train_support_tuple
                 for step in range(5):
-                    adaptation_loss = self.compute_loss(train_support_loader, use_tqdm=False)
-                    task_model.adapt(adaptation_loss, allow_unused=True, allow_nograd=True)  # computes gradient, update task_model in-place
+                    adaptation_loss = self.compute_loss(task_model, train_support_loader, use_tqdm=False)
+                    task_model.adapt(adaptation_loss, allow_unused=True)  # computes gradient, update task_model in-place
                 # Sum (over tasks)?
                 _, train_query_loader, _ = train_query_tuple
-                query_loss = self.compute_loss(train_query_loader, use_tqdm=False)
+                query_loss = self.compute_loss(task_model, train_query_loader, use_tqdm=False)
                 query_loss.backward()  # gradients w.r.t. maml.parameters()
                 # nn.utils.clip_grad_norm_(self.model.parameters(), 5.)
                 self.meta_optim.step()
+                # query_loss2 = self.compute_loss(self.model, train_query_loader)
+                # query_loss2.backward()
+                # self.optim.step()
+                # train_loss.append(query_loss)
                 train_loss += query_loss.detach().cpu().item()
+                tqdm_bar.set_description("Loss : {:.3f} ".format(query_loss.detach().cpu().item()))
             train_loss /= len(train_support_tuples)
+            # self.meta_optim.zero_grad()
+            # train_loss.backward()
+            # self.meta_optim.step()
+            # train_losses.append(train_loss.detach().cpu().item())
             train_losses.append(train_loss)
             print(f"(Approximate) train loss: {train_loss}")
+            ori_model = copy.deepcopy(self.model)
             
-            valid_score_trials = []
-            for trials in range(5):
-                valid_score_trials.append(self.fewshot_evaluate(valid_support_tuples, valid_query_tuples, num_fs_updates=num_fs_updates))
-            valid_score = sum(valid_score_trials) / len(valid_score_trials)
-            print(f"Avg. valid score: {valid_score}")
-            valid_scores.append(valid_score)
-            if valid_score > best_valid_score:
-                print("NEW BEST MODEL")
-                self.save("BEST")
-                best_valid_score = valid_score
+            self.save(f"{epoch}")
+            if valid_support_tuples:
+                valid_score_trials = []
+                for trials in range(5):
+                    valid_score_trials.append(self.fewshot_evaluate(valid_support_tuples, valid_query_tuples, num_fs_updates=num_fs_updates))
+                valid_score = sum(valid_score_trials) / len(valid_score_trials)
+                print(f"Avg. valid score: {valid_score}")
+                valid_scores.append(valid_score)
+                if valid_score > best_valid_score:
+                    print("NEW BEST MODEL")
+                    self.model = ori_model
+                    self.save("BEST")
+                    best_valid_score = valid_score
         self.save("LAST")
 
         """
@@ -319,12 +352,16 @@ class MetaVQA(VQA):
         """
         sup_scores = []
         qu_scores = []
+        do_break = False
         for (sup_tuple, query_tuple) in tqdm(zip(support_tuples, query_tuples)):
             self.optim = Adam([p for p in self.model.parameters() if p.requires_grad], args.lr)
 
             self.optim.zero_grad()
             ori_model = copy.deepcopy(self.model)
-            self.train(sup_tuple, sup_tuple, use_tqdm=False, epochs=num_fs_updates, do_save=False)
+            if do_break: import pdb; pdb.set_trace()
+            self.train(sup_tuple, sup_tuple, use_tqdm=False, epochs=num_fs_updates, do_save=False, do_break=do_break)
+            # for k in self.model.state_dict(): assert (self.model.state_dict()[k] == ori_model.state_dict()[k]).all()
+            if do_break: import pdb; pdb.set_trace()
 
             sup_score = self.evaluate(sup_tuple)
             # print(f"Train Score: {train_score}")
@@ -338,19 +375,30 @@ class MetaVQA(VQA):
         print(f"Average Query Score: {avg_q_score}")
         return avg_q_score
 
-    def load(self, path, all_pokemon_list):
+    def load(self, path, all_pokemon_list=None):
         state_dict = torch.load("%s.pth" % path)
         added_pokemon = False
-        if state_dict['lxrt_encoder.model.bert.embeddings.word_embeddings.weight'].size(0) > self.model.lxrt_encoder.model.bert.embeddings.word_embeddings.weight.size(0):
+        if all_pokemon_list and state_dict['lxrt_encoder.model.bert.embeddings.word_embeddings.weight'].size(0) > self.model.lxrt_encoder.model.bert.embeddings.word_embeddings.weight.size(0):
             print("Loading pokemon vocab")
             # Load new pokemon
-            vqa.model.add_new_tokens(all_pokemon_list)
+            self.model.add_new_tokens(all_pokemon_list)
             added_pokemon = True
         self.model.load_state_dict(state_dict, strict=False)
         print("Load model from %s" % path)
-        if not added_pokemon:
+        if all_pokemon_list and not added_pokemon:
             print("Loading pokemon vocab")
-            vqa.model.add_new_tokens(all_pokemon_list)
+            self.model.add_new_tokens(all_pokemon_list)
+        if self.maml:
+            if args.meta_word_embeds_only:
+                self.maml = l2l.algorithms.MAML(self.model.lxrt_encoder.model.bert.embeddings.word_embeddings, lr=(args.meta_lr))
+            else:
+                self.maml = l2l.algorithms.MAML(self.model, lr=(args.meta_lr))
+            self.maml = self.maml.cuda()
+            meta_trainable_params = [p for p in self.maml.parameters() if p.requires_grad]
+            self.meta_optim = Adam(meta_trainable_params, args.meta_lr)
+        base_trainable_params = [p for p in self.model.parameters() if p.requires_grad]
+        # assert len(base_trainable_params) == 1
+        self.optim = Adam(base_trainable_params, args.lr)
 
 
 if __name__ == "__main__":
@@ -361,6 +409,7 @@ if __name__ == "__main__":
     # Load VQA model weights
     # Note: It is different from loading LXMERT pre-trained weights.
     if args.load is not None:
+        print(args.add_pokemon_vocab)
         if not args.add_pokemon_vocab:
             all_pokemon_list = None
         vqa.load(args.load, all_pokemon_list)
@@ -418,19 +467,18 @@ if __name__ == "__main__":
             ))
         result = sum(valid_score_trials) / len(valid_score_trials)
         # vqa.fewshot_evaluate(fewshot_val_train, fewshot_val_test, num_fs_updates=args.num_fewshot_updates)
-        import pdb; pdb.set_trace()
         print(result)
     else:
+        init_eval_score = 0
         if vqa.valid_support_tuples is not None:
             valid_score_trials = []
             for trials in range(5):
                 valid_score_trials.append(vqa.fewshot_evaluate(vqa.valid_support_tuples, vqa.valid_query_tuples, num_fs_updates=args.num_fewshot_updates))
+                # valid_score_trials.append(vqa.fewshot_evaluate(vqa.train_support_tuples, vqa.train_query_tuples, num_fs_updates=args.num_fewshot_updates))
             init_eval_score = sum(valid_score_trials) / len(valid_score_trials)
             print("Valid Oracle: %0.2f" % (init_eval_score * 100))
         else:
-            init_eval_score = 0
             print("DO NOT USE VALIDATION")
-        # vqa.fewshot_train(vqa.train_data, vqa.valid_data, num_updates = args.num_fewshot_updates)
         vqa.fewshot_train(
             vqa.train_support_tuples, vqa.train_query_tuples, vqa.valid_support_tuples, vqa.valid_query_tuples, num_fs_updates=args.num_fewshot_updates, init_eval_score=init_eval_score
         )

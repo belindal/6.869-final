@@ -109,7 +109,7 @@ class LXRTEncoder(nn.Module):
     def dim(self):
         return 768
 
-    def forward(self, sents, feats, visual_attention_mask=None):
+    def forward(self, sents, feats, visual_attention_mask=None, precomputed_word_embeddings=None):
         train_features = convert_sents_to_features(
             sents, self.max_seq_length, self.tokenizer)
 
@@ -119,7 +119,8 @@ class LXRTEncoder(nn.Module):
 
         output = self.model(input_ids, segment_ids, input_mask,
                             visual_feats=feats,
-                            visual_attention_mask=visual_attention_mask)
+                            visual_attention_mask=visual_attention_mask,
+                            precomputed_word_embeddings=precomputed_word_embeddings)
         return output
 
     def save(self, path):

@@ -35,7 +35,7 @@ def parse_args():
 
     # Data Splits
     parser.add_argument("--train", default='train')
-    parser.add_argument("--valid", default='valid')
+    parser.add_argument("--valid", default='')
     parser.add_argument("--test", default=None)
 
     # Training Hyper-parameters
@@ -96,6 +96,8 @@ def parse_args():
     parser.add_argument('--image_features', default=None, type=str)
     parser.add_argument('--meta_epochs', default=10, type=int)
     parser.add_argument('--meta_lr', default=1e-3, type=float)
+    parser.add_argument('--add_pokemon_vocab', action='store_true', default=False)
+    parser.add_argument('--meta_word_embeds_only', action='store_true', default=False)
 
     # Parse the arguments.
     args = parser.parse_args()

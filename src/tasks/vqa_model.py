@@ -48,6 +48,7 @@ class VQAModel(nn.Module):
     def forward(
         self, feat=None, pos=None, sent=None,
         images=None, sizes=None, scales_yx=None,
+        precomputed_word_embeddings=None,
     ):
         """
         b -- batch_size, o -- object_number, f -- visual_feature_size
@@ -82,7 +83,7 @@ class VQAModel(nn.Module):
             feat = torch.stack(feat)
             pos = np.stack(pos)
             pos = torch.tensor(pos).to(feat.device)
-        x = self.lxrt_encoder(sent, (feat, pos))
+        x = self.lxrt_encoder(sent, (feat, pos), precomputed_word_embeddings=precomputed_word_embeddings)
         logit = self.logit_fc(x)
 
         return logit, full_features
