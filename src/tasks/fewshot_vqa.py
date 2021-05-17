@@ -121,9 +121,15 @@ class MetaVQA(VQA):
         
         # Model
         self.model = VQAModel(num_answers, frcnn=frcnn, frcnn_cfg=self.frcnn_cfg)
+        if args.learn_word_embeds_only:
+            for p in self.model.parameters():
+                p.requires_grad = False
+            for p in self.model.lxrt_encoder.model.bert.embeddings.word_embeddings.parameters():
+                p.requires_grad = True
+
         self.maml = None
         if not args.interact and not args.test:
-            if args.meta_word_embeds_only:
+            if args.meta_word_embeds_only or args.learn_word_embeds_only:
                 self.maml = l2l.algorithms.MAML(self.model.lxrt_encoder.model.bert.embeddings.word_embeddings, lr=(args.meta_lr))
             else:
                 self.maml = l2l.algorithms.MAML(self.model, lr=(args.meta_lr))
@@ -185,7 +191,7 @@ class MetaVQA(VQA):
                 model_inputs = {'feat': feats.cuda(), 'pos': boxes.cuda(), 'sent': sent}
             target = target.cuda()
 
-            if args.meta_word_embeds_only:
+            if args.meta_word_embeds_only or args.learn_word_embeds_only:
                 train_features = convert_sents_to_features(sent, self.model.lxrt_encoder.max_seq_length, self.model.lxrt_encoder.tokenizer)
                 input_ids = torch.tensor([f.input_ids for f in train_features], dtype=torch.long).cuda()
                 word_embeds = model(input_ids)
@@ -345,7 +351,7 @@ class MetaVQA(VQA):
         return accs
         """
     
-    def fewshot_evaluate(self, support_tuples: List[DataTuple], query_tuples: List[DataTuple], num_fs_updates: int = 1):
+    def fewshot_evaluate(self, support_tuples: List[DataTuple], query_tuples: List[DataTuple], num_fs_updates: int = 1, dump_dir: str = None):
         """
         Given paired support/query data, trains model for `num_fs_updates` updates on train data, then evaluates on eval data.
         Returns evaluation accuracy.
@@ -366,7 +372,15 @@ class MetaVQA(VQA):
             sup_score = self.evaluate(sup_tuple)
             # print(f"Train Score: {train_score}")
             sup_scores.append(sup_score)
-            q_score = self.evaluate(query_tuple)
+            if dump_dir:
+                os.makedirs(dump_dir, exist_ok=True)
+                pokemon = query_tuple.dataset.data[0]['img_id'].split('/')[-2]
+                assert query_tuple.dataset.data[0]['sent'] == f"Is this a {pokemon}?"
+                assert query_tuple.dataset.data[0]['label'] == {"yes": 1}
+                dump_file = os.path.join(dump_dir, f'{pokemon}.json')
+            else:
+                dump_file = None
+            q_score = self.evaluate(query_tuple, dump=dump_file)
             # print(f"Evaluation Score: {eval_score}")
             qu_scores.append(q_score)
             self.model = ori_model
@@ -388,8 +402,13 @@ class MetaVQA(VQA):
         if all_pokemon_list and not added_pokemon:
             print("Loading pokemon vocab")
             self.model.add_new_tokens(all_pokemon_list)
+        if args.learn_word_embeds_only:
+            for p in self.model.parameters():
+                p.requires_grad = False
+            for p in self.model.lxrt_encoder.model.bert.embeddings.word_embeddings.parameters():
+                p.requires_grad = True
         if self.maml:
-            if args.meta_word_embeds_only:
+            if args.meta_word_embeds_only or args.learn_word_embeds_only:
                 self.maml = l2l.algorithms.MAML(self.model.lxrt_encoder.model.bert.embeddings.word_embeddings, lr=(args.meta_lr))
             else:
                 self.maml = l2l.algorithms.MAML(self.model, lr=(args.meta_lr))
@@ -408,7 +427,7 @@ if __name__ == "__main__":
 
     # Load VQA model weights
     # Note: It is different from loading LXMERT pre-trained weights.
-    if args.load is not None:
+    if args.load is not None and not args.epoch_sweep:
         print(args.add_pokemon_vocab)
         if not args.add_pokemon_vocab:
             all_pokemon_list = None
@@ -448,7 +467,7 @@ if __name__ == "__main__":
         for img_datum in img_data:
             imgid2img[img_datum['img_id']] = img_datum
         result = vqa.interact(imgid2img, ans2label, label2ans)
-    elif args.test is not None:
+    elif args.test is not None or args.epoch_sweep:
         args.fast = args.tiny = False       # Always loading all data in test
         # if 'test' in args.test:
         #     vqa.predict(
@@ -457,17 +476,46 @@ if __name__ == "__main__":
         #         dump=os.path.join(args.output, 'test_predict.json')
         #     )
         # elif 'val' in args.test:
-        fewshot_val_train, fewshot_val_test = get_data_tuple_lists(args.test, bs=950, shuffle=False, drop_last=False, imgfeat_dir=args.image_features)
-        valid_score_trials = []
-        for trials in range(5):
-            valid_score_trials.append(vqa.fewshot_evaluate(
-                fewshot_val_train,
-                fewshot_val_test,
-                num_fs_updates = args.num_fewshot_updates
-            ))
-        result = sum(valid_score_trials) / len(valid_score_trials)
-        # vqa.fewshot_evaluate(fewshot_val_train, fewshot_val_test, num_fs_updates=args.num_fewshot_updates)
-        print(result)
+        if args.epoch_sweep:
+            assert args.test is not None
+            checkpoints = glob(os.path.join(args.epoch_sweep, "*.pth"))
+            epochs = [
+                int(os.path.split(checkpoint_fn)[-1].replace(".pth", "")) for checkpoint_fn in checkpoints
+                if os.path.split(checkpoint_fn)[-1] != "BEST.pth" and os.path.split(checkpoint_fn)[-1] != "LAST.pth"
+            ]
+            max_epoch = max(epochs)
+            loaded_checkpoint = False
+        else:
+            max_epoch = 1 
+            loaded_checkpoint = True
+        best_result = 0
+        for epoch in range(max_epoch):
+            if not loaded_checkpoint:
+                if not args.add_pokemon_vocab: all_pokemon_list = None
+                checkpoint_fn = os.path.join(args.epoch_sweep, str(epoch))
+                vqa.load(checkpoint_fn, all_pokemon_list)
+                print(epoch)
+            fewshot_val_train, fewshot_val_test = get_data_tuple_lists(args.test, bs=950, shuffle=False, drop_last=False, imgfeat_dir=args.image_features)
+            valid_score_trials = []
+            for trials in range(5):
+                if not loaded_checkpoint:
+                    if not args.add_pokemon_vocab: all_pokemon_list = None
+                    vqa.load(checkpoint_fn, all_pokemon_list)
+                valid_score_trials.append(vqa.fewshot_evaluate(
+                    fewshot_val_train,
+                    fewshot_val_test,
+                    num_fs_updates = args.num_fewshot_updates,
+                    dump_dir = os.path.join(args.output, f'{args.test}_try{trials}_predict'),
+                ))
+            result = sum(valid_score_trials) / len(valid_score_trials)
+            # vqa.fewshot_evaluate(fewshot_val_train, fewshot_val_test, num_fs_updates=args.num_fewshot_updates)
+            print(result)
+            if args.epoch_sweep and result > best_result:
+                print("BEST EPOCH")
+                if not args.add_pokemon_vocab: all_pokemon_list = None
+                vqa.load(checkpoint_fn, all_pokemon_list)
+                vqa.save("BEST")
+                best_result = result
     else:
         init_eval_score = 0
         if vqa.valid_support_tuples is not None:

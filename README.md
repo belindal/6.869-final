@@ -66,10 +66,22 @@ Few-shot training (metalearning) and eval
 ```bash
 bash run/vqa_fewshot_eval.bash 11 vqa_fewshot_pokemon --load snap/vqa/vqa_lxr955/BEST --meta_epochs 50
 bash run/vqa_fewshot_eval.bash 9 vqa_fewshot_pokemon_add_toks --load snap/vqa/vqa_lxr955/BEST --meta_epochs 50 --add_pokemon_vocab
-bash run/vqa_fewshot_eval.bash 9 vqa_fewshot_pokemon --load snap/vqa/vqa_lxr955/BEST --test val
+bash run/vqa_fewshot_eval.bash 9 vqa_lxr955 --load snap/vqa/vqa_lxr955/BEST --test val
 
 bash run/vqa_fewshot_eval.bash 11 vqa_fewshot_pokemon --load snap/vqa/vqa_lxr955/BEST --meta_epochs 50 --meta_lr 1e-3
 bash run/vqa_fewshot_eval.bash 9 vqa_fewshot_pokemon_train_toks_only --load snap/vqa/vqa_lxr955/BEST --add_pokemon_vocab --meta_word_embeds_only --meta_epochs 50 --meta_lr 1e-3
+
+bash run/vqa_fewshot_eval.bash 13 vqa_fewshot_pokemon --load snap/vqa/vqa_lxr955/BEST --meta_epochs 50 --meta_lr 1e-3 --epoch_sweep snap/vqa/vqa_fewshot_pokemon --test val
+bash run/vqa_fewshot_eval.bash 9 vqa_fewshot_pokemon_meta_toks_only --load snap/vqa/vqa_lxr955/BEST --add_p
+okemon_vocab --meta_word_embeds_only --learn_word_embeds_only --meta_epochs 50 --meta_lr 1e-3
+bash run/vqa_fewshot_eval.bash 9 vqa_fewshot_pokemon_meta_toks_only --load snap/vqa/vqa_lxr955/BEST --add_pokemon_vocab --meta_word_embeds_only --meta_epochs 50 --meta_lr 1e-3 --epoch_sweep snap/vqa/vqa_fewshot_pokemon_meta_toks_only --test val
+
+bash run/vqa_fewshot_eval.bash 9 vqa_fewshot_pokemon_meta_toks_only --load snap/vqa/vqa_fewshot_pokemon_meta_toks_only/BEST --add_pokemon_vocab --meta_word_embeds_only --meta_epochs 50 --meta_lr 1e-3 --test val
+
+bash run/vqa_fewshot_eval.bash 9 vqa_fewshot_pokemon_learn_toks_only --load snap/vqa/vqa_lxr955/BEST --add_pokemon_vocab --meta_word_embeds_only --learn_word_embeds_only --meta_epochs 50 --meta_lr 1e-3
+
+bash run/vqa_fewshot_eval.bash 9 vqa_fewshot_pokemon_learn_toks_only --load snap/vqa/vqa_lxr955/BEST --add_pokemon_vocab --meta_word_embeds_only --learn_word_embeds_only --meta_epochs 50 --meta_lr 1e-3
+bash run/vqa_fewshot_eval.bash 11 vqa_fewshot_pokemon_learn_toks_only --load snap/vqa/vqa_fewshot_pokemon_learn_toks_only/5 --add_pokemon_vocab --meta_word_embeds_only --learn_word_embeds_only --meta_epochs 50 --meta_lr 1e-3 --test val --num_fewshot_updates 5
 ```
 Add `--load_frcnn` features to each of vqa commands in order use the frcnn (instead of pre-loaded features)
 
@@ -90,6 +102,9 @@ Average Support Score: 0.96
 Average Query Score: 0.544
 Average Support Score: 0.98
 Average Query Score: 0.6080000000000001
+
+Baseline train everything: 56.64 +- 
+Baseline train word embeds only: 48.8 +- 0.0
 
 - Metalearning saved in `snap/vqa/vqa_fewshot_pokemon_fsupdates1/BEST`
 
