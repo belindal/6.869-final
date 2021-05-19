@@ -11,6 +11,7 @@ import torch.nn as nn
 from torch.utils.data.dataloader import DataLoader
 from tqdm import tqdm
 import learn2learn as l2l
+from learn2learn.algorithms.maml import maml_update
 
 from param import args
 from pretrain.qa_answer_table import load_lxmert_qa
@@ -27,6 +28,7 @@ from frcnn.modeling_frcnn import GeneralizedRCNN
 from frcnn.processing_image import Preprocess
 from tasks.vqa import VQA, get_data_tuple, DataTuple
 from torch.optim import Adam
+from torch.autograd import grad
 
 
 DataTuple = collections.namedtuple("DataTuple", 'dataset loader evaluator')
@@ -131,6 +133,10 @@ class MetaVQA(VQA):
         if not args.interact and not args.test:
             if args.meta_word_embeds_only or args.learn_word_embeds_only:
                 self.maml = l2l.algorithms.MAML(self.model.lxrt_encoder.model.bert.embeddings.word_embeddings, lr=(args.meta_lr))
+            # elif args.meta_lang_encoder_only:
+            #     self.maml = l2l.algorithms.MAML(self.model.lxrt_encoder.model.bert, lr=(args.meta_lr))
+            elif args.meta_answer_head_only:
+                self.maml = l2l.algorithms.MAML(self.model.logit_fc, lr=(args.meta_lr))
             else:
                 self.maml = l2l.algorithms.MAML(self.model, lr=(args.meta_lr))
 
@@ -175,7 +181,7 @@ class MetaVQA(VQA):
         os.makedirs(self.output, exist_ok=True)
     
     def compute_loss(
-        self, model, loader, use_tqdm=False
+        self, model, loader, use_tqdm=False, meta_word_embeds_only=False, inner_loop=False
     ):
         # dset, loader, evaluator = train_tuple
         iter_wrapper = (lambda x: tqdm(x, total=len(loader))) if use_tqdm else (lambda x: x)
@@ -191,17 +197,35 @@ class MetaVQA(VQA):
                 model_inputs = {'feat': feats.cuda(), 'pos': boxes.cuda(), 'sent': sent}
             target = target.cuda()
 
-            if args.meta_word_embeds_only or args.learn_word_embeds_only:
+            if meta_word_embeds_only:
                 train_features = convert_sents_to_features(sent, self.model.lxrt_encoder.max_seq_length, self.model.lxrt_encoder.tokenizer)
                 input_ids = torch.tensor([f.input_ids for f in train_features], dtype=torch.long).cuda()
+                # meta model is word embeddings only
                 word_embeds = model(input_ids)
                 model_inputs['precomputed_word_embeddings'] = word_embeds
-                logit, frcnn_features = self.model(**model_inputs)
+                # give word embeddings to full model
+                logit, _ = self.model(**model_inputs)
+            # elif args.meta_lang_encoder_only:
+            #     assert 'feat' in model_inputs
+            #     # meta model is lxrt encoder only
+            #     lxrt_enc_outs = model(model_inputs['sent'], (model_inputs['feat'], model_inputs['pos']))
+            #     logit = self.model.logit_fc(lxrt_enc_outs)
+            elif args.meta_answer_head_only:
+                assert 'feat' in model_inputs
+                # met model is `logit_fc` only
+                lxrt_enc_outs = self.model.lxrt_encoder(model_inputs['sent'], (model_inputs['feat'], model_inputs['pos']))
+                logit = model(lxrt_enc_outs)
             else:
-                logit, frcnn_features = model(**model_inputs)
+                logit, _ = model(**model_inputs)
             assert logit.dim() == target.dim() == 2
             loss = self.bce_loss(logit, target)
             loss = loss * logit.size(1)
+            if inner_loop:
+                # do inner loop update
+                diff_params = [p for p in model.parameters() if p.requires_grad]
+                grads = grad(loss, diff_params, allow_unused=True, retain_graph=True, create_graph=True)
+                # updates parameters in-place
+                maml_update(model, lr=args.lr, grads=grads)
             losses += loss
         return losses
     
@@ -227,21 +251,60 @@ class MetaVQA(VQA):
             # TODO batch up tasks???
             # for (train_support_batch, train_query_batch) in collate_support_query(train_support_tuples, train_query_tuples):
             for (train_support_tuple, train_query_tuple) in tqdm_bar:
-                # import pdb; pdb.set_trace()
-                # self.train(train_support_tuple, epochs=1, do_save=False, do_break=True)
-                # loss = self.compute_loss(self.model, train_query_tuple[1]); loss.backward(); self.optim.step()
-                # for k in self.model.state_dict(): assert (self.model.state_dict()[k] == old_model.state_dict()[k]).all()
-                task_model = self.maml.clone()  # torch.clone() for nn.Modules
-
-                self.model.train()
-                self.meta_optim.zero_grad()
                 _, train_support_loader, _ = train_support_tuple
-                for step in range(5):
-                    adaptation_loss = self.compute_loss(task_model, train_support_loader, use_tqdm=False)
-                    task_model.adapt(adaptation_loss, allow_unused=True)  # computes gradient, update task_model in-place
-                # Sum (over tasks)?
                 _, train_query_loader, _ = train_query_tuple
-                query_loss = self.compute_loss(task_model, train_query_loader, use_tqdm=False)
+                self.meta_optim.zero_grad()
+                if args.meta_word_embeds_only and not args.learn_word_embeds_only:
+                    task_model = copy.deepcopy(self.model.lxrt_encoder.model.bert.embeddings.word_embeddings)
+                    _, train_support_loader, _ = train_support_tuple
+                    adaptation_loss = self.compute_loss(
+                        task_model,
+                        train_support_loader, use_tqdm=False,
+                        inner_loop=False,
+                        meta_word_embeds_only=(args.meta_word_embeds_only or args.learn_word_embeds_only),
+                    )
+                    diff_params = [p for p in task_model.parameters() if p.requires_grad]
+                    grads = grad(adaptation_loss, diff_params, allow_unused=True, retain_graph=True, create_graph=True)
+                    maml_update(task_model, lr=args.lr, grads=grads)
+                    """
+                    full_model = copy.deepcopy(self.model)
+                    full_model.train()
+                    # inner loop on all parameters
+                    inner_loop = False
+                    # adaptation_loss = self.compute_loss(task_model, train_support_loader, use_tqdm=False, meta_word_embeds_only=args.meta_word_embeds_only)
+                    adaptation_loss = self.compute_loss(
+                        full_model.lxrt_encoder.model.bert.embeddings.word_embeddings,
+                        train_support_loader, use_tqdm=False,
+                        inner_loop=inner_loop,
+                        meta_word_embeds_only=False,
+                    )
+                    if not inner_loop:
+                        # do inner loop update
+                        diff_params = [p for p in full_model.parameters() if p.requires_grad]
+                        grads = grad(adaptation_loss, diff_params, allow_unused=True, retain_graph=True, create_graph=True)
+                        # updates parameters in-place
+                        maml_update(full_model, lr=args.lr, grads=grads)
+                    # meta-update specific parameters
+                    if args.meta_word_embeds_only or args.learn_word_embeds_only:
+                        task_model = full_model.lxrt_encoder.model.bert.embeddings.word_embeddings
+                    elif args.meta_answer_head_only:
+                        task_model = full_model.logit_fc
+                    else:
+                        task_model = full_model
+                    # """
+                else:
+                    task_model = self.maml.clone()
+                    _, train_support_loader, _ = train_support_tuple
+                    adaptation_loss = self.compute_loss(
+                        task_model,
+                        train_support_loader, use_tqdm=False,
+                        inner_loop=False,
+                        meta_word_embeds_only=(args.meta_word_embeds_only or args.learn_word_embeds_only),
+                    )
+                    task_model.adapt(adaptation_loss, allow_unused=True)
+
+                # Sum (over tasks)
+                query_loss = self.compute_loss(task_model, train_query_loader, use_tqdm=False, meta_word_embeds_only=args.meta_word_embeds_only)
                 query_loss.backward()  # gradients w.r.t. maml.parameters()
                 # nn.utils.clip_grad_norm_(self.model.parameters(), 5.)
                 self.meta_optim.step()
@@ -410,6 +473,10 @@ class MetaVQA(VQA):
         if self.maml:
             if args.meta_word_embeds_only or args.learn_word_embeds_only:
                 self.maml = l2l.algorithms.MAML(self.model.lxrt_encoder.model.bert.embeddings.word_embeddings, lr=(args.meta_lr))
+            # elif args.meta_lang_encoder_only:
+            #     self.maml = l2l.algorithms.MAML(self.model.lxrt_encoder.model.bert, lr=(args.meta_lr))
+            elif args.meta_answer_head_only:
+                self.maml = l2l.algorithms.MAML(self.model.logit_fc, lr=(args.meta_lr))
             else:
                 self.maml = l2l.algorithms.MAML(self.model, lr=(args.meta_lr))
             self.maml = self.maml.cuda()

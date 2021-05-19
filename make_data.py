@@ -105,12 +105,12 @@ def get_side_by_side_ex(split, pos_pokemon, pos_image, valid_neg_pokemons, all_p
         'img_id': comb_imgpath,
         'label': {'left' if image_order[0] == 1 else 'right': 1},
         'question_id': qid,
-        'question_type': f'Which side is the',
+        'question_type': f'which side',
         'sent': f'Which side is the {pos_pokemon}?',
     }, neg_pokemon, neg_image
 
 
-def make_qs_data():
+def make_qs_data(splits):
     """
     {
         "answer_type": "other", 
@@ -134,7 +134,7 @@ def make_qs_data():
         split_to_pokemon[split] = []
         for pokemon in glob.glob(os.path.join(raw_images_dir, split, "*")):
             pokemon_name = os.path.split(pokemon)[-1]
-            if pokemon_name == 'side_by_side': continue
+            if 'side_by_side' in pokemon_name: continue
             split_to_pokemon[split].append(pokemon_name)
             all_pokemon_names.append(pokemon_name)
             all_pokemon_name_to_imgs[pokemon_name] = list(glob.glob(os.path.join(pokemon, "*")))
@@ -145,71 +145,97 @@ def make_qs_data():
         if not os.path.exists(output_dir): os.makedirs(output_dir, exist_ok=True)
         for pokemon in tqdm(split_to_pokemon[split]):
             pos_images = all_pokemon_name_to_imgs[pokemon]
+            assert len(pos_images) > 8
             # get random negative
             valid_neg_pokemons = [p for p in split_to_pokemon[split] if p is not pokemon]
             random.shuffle(pos_images)
 
             fewshot_data = {'train': [], 'eval': []}
             # make train data
-            fewshot_data['train'].append({
-                'img_id': pos_images[0],
-                'label': {'yes': 1},
-                'question_id': 1,
-                'question_type': f'Is this a',
-                'sent': f'Is this a {pokemon}?',
-            })
-            # fewshot_data['train'].append({
-            #     'img_id': pos_images[0],
-            #     'label': {'no': 1},
-            #     'question_id': 2,
-            #     'question_type': f'Is this a',
-            #     'sent': f'Is this a {random.choice(valid_neg_pokemons)}?',
-            # })
-            fewshot_data['train'].append({
-                'img_id': random.choice(all_pokemon_name_to_imgs[random.choice(valid_neg_pokemons)]),
-                'label': {'no': 1},
-                'question_id': 3,
-                'question_type': f'Is this a',
-                'sent': f'Is this a {pokemon}?',
-            })
-            # fewshot_data['train'].append(get_side_by_side_ex(pokemon, pos_images[0], valid_neg_pokemons, all_pokemon_name_to_imgs))
-            # make eval data
-            # Image generalization question
-            fewshot_data['eval'].append({
-                'img_id': pos_images[1],
-                'label': {'yes': 1},
-                'question_id': 4,
-                'question_type': f'Is this a',
-                'sent': f'Is this a {pokemon}?',
-            })
-            # fewshot_data['eval'].append({
-            #     'img_id': pos_images[1],
-            #     'label': {'no': 1},
-            #     'question_id': 5,
-            #     'question_type': f'Is this a',
-            #     'sent': f'Is this a {random.choice(valid_neg_pokemons)}?',
-            # })
-            fewshot_data['eval'].append({
-                'img_id': random.choice(all_pokemon_name_to_imgs[random.choice(valid_neg_pokemons)]),
-                'label': {'no': 1},
-                'question_id': 6,
-                'question_type': f'Is this a',
-                'sent': f'Is this a {pokemon}?',
-            })
-            # Distinguishing question (+possible image generalization)
-            comb_ex1, neg_pokemon1, neg_image1 = get_side_by_side_ex(split, pokemon, pos_images[0], valid_neg_pokemons, all_pokemon_name_to_imgs, 7)
-            comb_ex2, neg_pokemon2, neg_image2 = get_side_by_side_ex(split, pokemon, pos_images[1], valid_neg_pokemons, all_pokemon_name_to_imgs, 8)
-            fewshot_data['eval'].append(comb_ex1)
-            fewshot_data['eval'].append(comb_ex2)
-            # Mutual exclusivity question
-            mut_exc_ex = {
-                'img_id': comb_ex1['img_id'],
-                'label': {'left' if comb_ex1['label'] == 'right' else 'right': 1},
-                'question_id': 9,
-                'question_type': comb_ex1['question_type'],
-                'sent': f'Which side is the {neg_pokemon1}?'
-            }
-            fewshot_data['eval'].append(mut_exc_ex)
+            n_pos_images = 4
+            qid = 0
+            for i in range(n_pos_images):
+                fewshot_data['train'].append({
+                    'img_id': pos_images[i],
+                    'label': {'yes': 1},
+                    'question_id': qid,
+                    'question_type': f'pos',
+                    'sent': f'Is this a {pokemon}?',
+                })
+                qid += 1
+            train_neg_pokemons = []
+            train_neg_images = []
+            n_neg_images = 4
+            for _ in range(n_neg_images):
+                neg_pokemon = random.choice(valid_neg_pokemons)
+                train_neg_pokemons.append(neg_pokemon)
+                neg_image = random.choice(all_pokemon_name_to_imgs[neg_pokemon])
+                train_neg_images.append(neg_image)
+                fewshot_data['train'].append({
+                    'img_id': neg_image,
+                    'label': {'no': 1},
+                    'question_id': qid+1,
+                    'question_type': f'neg',
+                    'sent': f'Is this a {pokemon}?',
+                })
+                qid += 1
+            fewshot_data['train'].append(get_side_by_side_ex(split, pokemon, pos_images[0], valid_neg_pokemons, all_pokemon_name_to_imgs, qid, neg_pokemon=neg_pokemon, neg_image=neg_image)[0])
+            qid += 1
+
+            for i in range(n_pos_images, 2*n_pos_images):
+                # make eval data
+                # Image generalization question
+                fewshot_data['eval'].append({
+                    'img_id': pos_images[i],
+                    'label': {'yes': 1},
+                    'question_id': qid,
+                    'question_type': f'pos, image gen',
+                    'sent': f'Is this a {pokemon}?',
+                })
+                qid += 1
+            for _ in range(n_pos_images):
+                fewshot_data['eval'].append({
+                    'img_id': random.choice(all_pokemon_name_to_imgs[random.choice(valid_neg_pokemons)]),
+                    'label': {'no': 1},
+                    'question_id': qid,
+                    'question_type': f'neg, image gen',
+                    'sent': f'Is this a {pokemon}?',
+                })
+                qid += 1
+            # Distinguishing question (no image generalization)
+            for i in range(n_pos_images):
+                comb_ex1, neg_pokemon1, neg_image1 = get_side_by_side_ex(split, pokemon, pos_images[i], valid_neg_pokemons, all_pokemon_name_to_imgs, qid, neg_pokemon=train_neg_pokemons[i], neg_image=train_neg_images[i])
+                qid += 1
+                comb_ex1['question_type'] += ', text gen'
+                fewshot_data['eval'].append(comb_ex1)
+                # Mutual exclusivity question
+                mut_exc_ex = {
+                    'img_id': comb_ex1['img_id'],
+                    'label': {'left' if comb_ex1['label'].get('right', 0.0) > 0.5 else 'right': 1},
+                    'question_id': qid,
+                    'question_type': 'mutual exclusivity, text gen',
+                    'sent': f'Which side is the {neg_pokemon1}?'
+                }
+                qid += 1
+                fewshot_data['eval'].append(mut_exc_ex)
+
+            # Distinguishing question + image generalization
+            for i in range(n_pos_images, 2*n_pos_images):
+                comb_ex2, neg_pokemon2, neg_image2 = get_side_by_side_ex(split, pokemon, pos_images[i], valid_neg_pokemons, all_pokemon_name_to_imgs, qid)
+                qid += 1
+                comb_ex2['question_type'] += ', image gen, text gen'
+                fewshot_data['eval'].append(comb_ex2)
+                # Mutual exclusivity question
+                mut_exc_ex = {
+                    'img_id': comb_ex2['img_id'],
+                    'label': {'left' if comb_ex2['label'].get('right', 0.0) > 0.5 else 'right': 1},
+                    'question_id': qid,
+                    'question_type': 'mutual exclusivity, image gen, text gen',
+                    'sent': f'Which side is the {neg_pokemon2}?'
+                }
+                qid += 1
+                fewshot_data['eval'].append(mut_exc_ex)
+            
             save_fn = os.path.join(output_dir, f'{pokemon}.json')
             json.dump(fewshot_data, open(save_fn, "w"), indent=4)
 
@@ -218,11 +244,13 @@ def make_side_by_side_images(left_imgpath, right_imgpath, comb_imgpath):
     try:
         imgs = [Image.open(i) for i in [left_imgpath, right_imgpath]]
         for i in range(len(imgs)):
-            if imgs[i].mode == 'RGBA':
-                imgs[i].load()
-                background = Image.new("RGB", imgs[i].size, (255, 255, 255))
-                background.paste(imgs[i], mask=imgs[i].split()[3]) # 3 is the alpha channel
-                imgs[i] = background
+            if imgs[i].mode != 'RGB':
+                imgs[i] = imgs[i].convert("RGB")
+            #     imgs[i].load()
+            #     background = Image.new("RGB", imgs[i].size, (255, 255, 255))
+            #     background.paste(imgs[i], mask=imgs[i].split()[3]) # 3 is the alpha channel
+            #     imgs[i] = background
+            # elif imgs[i].mode == “L”, “RGB” and “CMYK.”:
 
         # pick the image which is the smallest, and resize the others to match it (can be arbitrary image shape here)
         min_shape = sorted([(np.sum(i.size), i.size ) for i in imgs])[0][1]
@@ -242,6 +270,7 @@ def make_side_by_side_images(left_imgpath, right_imgpath, comb_imgpath):
     except:
         print(left_imgpath)
         print(right_imgpath)
+        import pdb; pdb.set_trace()
         return None
 
 
@@ -300,8 +329,8 @@ def main():
     # filter_image_data()
     # print("Splitting Images")
     # split_image_data()
-    # print("Making Questions")
-    # make_qs_data()
+    print("Making Questions")
+    make_qs_data(splits=['test'])
     print("Extracting FRCNN Features")
     get_frcnn_features(splits_to_process=['test'])
 

@@ -1,6 +1,6 @@
 # Learning to Learn Few-Shot VQA
 
-### General 
+## General 
 The code requires **Python 3** and please install the Python dependencies with the command:
 ```bash
 pip install -r requirements.txt
@@ -11,8 +11,8 @@ By the way, a Python 3 virtual environment could be set up and run with:
 virtualenv name_of_environment -p python3
 source name_of_environment/bin/activate
 ```
-### VQA
-#### Fine-tuning
+## LXMERT
+### Fine-tuning
 1. Please make sure the LXMERT pre-trained model is either [downloaded](#pre-trained-models) or [pre-trained](#pre-training).
 
 2. Download the re-distributed json files for VQA 2.0 dataset. The raw VQA 2.0 dataset could be downloaded from the [official website](https://visualqa.org/download.html).
@@ -47,65 +47,67 @@ The **logs** and **model snapshots** will be saved under folder `snap/vqa/vqa_lx
 The validation result after training will be around **69.7%** to **70.2%**. 
 
 
-Make data and get FRCNN features
+### Make data and get FRCNN features
 ```bash
 python make_data.py
-python frcnn/extract_features_frcnn.py --image_dir img_dir --num_features 2048 --visualize True
+```
+Visualize FRCNN bounding boxes:
+```bash
 python frcnn/visualize.py --image_path img_dir/001Bulbasaur.png --features_path frcnn_output/001Bulbasaur_full.npy
 python frcnn/visualize.py --image_path img_dir/ --features_path frcnn_output/ 
 ```
 
+### Few-shot evaluation
+Baseline (LXMERT-VQA)
 ```bash
-bash run/vqa_test.bash 0 vqa_lxr955_results --load snap/vqa/vqa_lxr955/BEST --interact
 
-bash run/vqa_finetune.bash 9 vqa_fewshot --load_frcnn --train fewshot_train --valid fewshot_train --load snap/vqa/vqa_lxr955/BEST --batchSize 1 --epochs 1   
-bash run/vqa_test.bash 9 vqa_fewshot --load_frcnn --load snap/vqa/vqa_fewshot/BEST --interact
 ```
 
-Few-shot training (metalearning) and eval
+### Few-shot training (metalearning)
+Top-Line result: Meta-learning full LXMERT
 ```bash
-bash run/vqa_fewshot_eval.bash 11 vqa_fewshot_pokemon --load snap/vqa/vqa_lxr955/BEST --meta_epochs 50
-bash run/vqa_fewshot_eval.bash 9 vqa_fewshot_pokemon_add_toks --load snap/vqa/vqa_lxr955/BEST --meta_epochs 50 --add_pokemon_vocab
-bash run/vqa_fewshot_eval.bash 9 vqa_lxr955 --load snap/vqa/vqa_lxr955/BEST --test val
+bash run/vqa_fewshot_eval.bash 11 vqa_fewshot_pokemon --load snap/vqa/vqa_lxr955/BEST --meta_epochs 50 --meta_lr 1e-4
+```
 
-bash run/vqa_fewshot_eval.bash 11 vqa_fewshot_pokemon --load snap/vqa/vqa_lxr955/BEST --meta_epochs 50 --meta_lr 1e-3
-bash run/vqa_fewshot_eval.bash 9 vqa_fewshot_pokemon_train_toks_only --load snap/vqa/vqa_lxr955/BEST --add_pokemon_vocab --meta_word_embeds_only --meta_epochs 50 --meta_lr 1e-3
+Word embeddings only -- no added vocab
+```bash
+bash run/vqa_fewshot_eval.bash 9 vqa_fewshot_pokemon_toks_only_no_vocab --load snap/vqa/vqa_lxr955/BEST --meta_epochs 50 --meta_word_embeds_only --learn_word_embeds_only
+```
 
-bash run/vqa_fewshot_eval.bash 13 vqa_fewshot_pokemon --load snap/vqa/vqa_lxr955/BEST --meta_epochs 50 --meta_lr 1e-3 --epoch_sweep snap/vqa/vqa_fewshot_pokemon --test val
-bash run/vqa_fewshot_eval.bash 9 vqa_fewshot_pokemon_meta_toks_only --load snap/vqa/vqa_lxr955/BEST --add_p
-okemon_vocab --meta_word_embeds_only --learn_word_embeds_only --meta_epochs 50 --meta_lr 1e-3
-bash run/vqa_fewshot_eval.bash 9 vqa_fewshot_pokemon_meta_toks_only --load snap/vqa/vqa_lxr955/BEST --add_pokemon_vocab --meta_word_embeds_only --meta_epochs 50 --meta_lr 1e-3 --epoch_sweep snap/vqa/vqa_fewshot_pokemon_meta_toks_only --test val
+Word embeddings only -- w/ added vocab
+```bash
+bash run/vqa_fewshot_eval.bash 9 vqa_fewshot_pokemon_meta_toks_only3 --load snap/vqa/vqa_lxr955/BEST --meta_epochs 50 --meta_word_embeds_only --learn_word_embeds_only --add_pokemon_vocab
+```
 
-bash run/vqa_fewshot_eval.bash 9 vqa_fewshot_pokemon_meta_toks_only --load snap/vqa/vqa_fewshot_pokemon_meta_toks_only/BEST --add_pokemon_vocab --meta_word_embeds_only --meta_epochs 50 --meta_lr 1e-3 --test val
+Answer classification head only
+```bash
+bash run/vqa_fewshot_eval.bash 9 vqa_fewshot_pokemon_anshead_only --load snap/vqa/vqa_lxr955/BEST --meta_answer_head_only --meta_epochs 50
+```
 
-bash run/vqa_fewshot_eval.bash 9 vqa_fewshot_pokemon_learn_toks_only --load snap/vqa/vqa_lxr955/BEST --add_pokemon_vocab --meta_word_embeds_only --learn_word_embeds_only --meta_epochs 50 --meta_lr 1e-3
+### Few-shot evaluation
+Non meta-learned LXMERT
+```bash
+```
 
-bash run/vqa_fewshot_eval.bash 9 vqa_fewshot_pokemon_learn_toks_only --load snap/vqa/vqa_lxr955/BEST --add_pokemon_vocab --meta_word_embeds_only --learn_word_embeds_only --meta_epochs 50 --meta_lr 1e-3
-bash run/vqa_fewshot_eval.bash 11 vqa_fewshot_pokemon_learn_toks_only --load snap/vqa/vqa_fewshot_pokemon_learn_toks_only/5 --add_pokemon_vocab --meta_word_embeds_only --learn_word_embeds_only --meta_epochs 50 --meta_lr 1e-3 --test val --num_fewshot_updates 5
+Meta-learned full model
+```bash
+bash run/vqa_fewshot_eval.bash 11 vqa_fewshot_pokemon --load snap/vqa/vqa_fewshot_pokemon/2 --num_fewshot_updates 10 --test {val|test}
+```
+
+Word embeddings only -- no added vocab
+```bash
+bash run/vqa_fewshot_eval.bash 9 vqa_fewshot_pokemon_toks_only_no_vocab --load snap/vqa/vqa_fewshot_pokemon_toks_only_no_vocab/5 --test {val|test} --meta_word_embeds_only --learn_word_embeds_only --num_fewshot_updates 10 --lr 1e-2
+```
+
+Word embeddings only -- w/ added vocab
+```bash
+bash run/vqa_fewshot_eval.bash 13 vqa_fewshot_pokemon_meta_toks_only --load snap/vqa/vqa_fewshot_pokemon_meta_toks_only3/20 --add_pokemon_vocab --test {val|test} --meta_word_embeds_only --learn_word_embeds_only --lr 1e-2 --num_fewshot_updates 10
+```
+
+Answer classification head only
+```bash
+bash run/vqa_fewshot_eval.bash 9 vqa_fewshot_pokemon_anshead_only --load snap/vqa/vqa_fewshot_pokemon_anshead_only/5 --test {val|test} --num_fewshot_updates 10
 ```
 Add `--load_frcnn` features to each of vqa commands in order use the frcnn (instead of pre-loaded features)
-
-Expected Results (old dataset)
-| | No training | + Meta-learning |
-|---| ---- | ---- |
-| Avg. Valid Support Score | 82.7 | 86.7 |
-| Avg. Valid Query Score | 59 | 66 |
-
-New dataset
-===
-Average Support Score: 0.98
-Average Query Score: 0.536
-Average Support Score: 1.0
-Average Query Score: 0.616
-===
-Average Support Score: 0.96
-Average Query Score: 0.544
-Average Support Score: 0.98
-Average Query Score: 0.6080000000000001
-
-Baseline train everything: 56.64 +- 
-Baseline train word embeds only: 48.8 +- 0.0
-
-- Metalearning saved in `snap/vqa/vqa_fewshot_pokemon_fsupdates1/BEST`
 
 Expected Results (new dataset)

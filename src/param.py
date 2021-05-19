@@ -99,6 +99,7 @@ def parse_args():
     parser.add_argument('--add_pokemon_vocab', action='store_true', default=False)
     parser.add_argument('--learn_word_embeds_only', action='store_true', default=False)
     parser.add_argument('--meta_word_embeds_only', action='store_true', default=False)
+    parser.add_argument('--meta_answer_head_only', action='store_true', default=False)
     parser.add_argument('--epoch_sweep', type=str, default=False)
 
     # Parse the arguments.

@@ -13,5 +13,5 @@ CUDA_VISIBLE_DEVICES=$1 PYTHONPATH=$PYTHONPATH:./src \
     --train train --image_features data/vqa/fewshot_imgfeat \
     --llayers 9 --xlayers 5 --rlayers 5 \
     --loadLXMERTQA snap/pretrained/model \
-    --batchSize 32 --optim bert --lr 5e-5 --meta_lr 1e-4 --meta_epochs 10 --num_fewshot_updates 1 \
+    --batchSize 32 --optim bert --lr 1e-5 --meta_lr 1e-3 --meta_epochs 10 --num_fewshot_updates 1 \
     --tqdm --output $output ${@:3}
