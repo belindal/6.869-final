@@ -133,8 +133,6 @@ class MetaVQA(VQA):
         if not args.interact and not args.test:
             if args.meta_word_embeds_only or args.learn_word_embeds_only:
                 self.maml = l2l.algorithms.MAML(self.model.lxrt_encoder.model.bert.embeddings.word_embeddings, lr=(args.meta_lr))
-            # elif args.meta_lang_encoder_only:
-            #     self.maml = l2l.algorithms.MAML(self.model.lxrt_encoder.model.bert, lr=(args.meta_lr))
             elif args.meta_answer_head_only:
                 self.maml = l2l.algorithms.MAML(self.model.logit_fc, lr=(args.meta_lr))
             else:
@@ -156,19 +154,6 @@ class MetaVQA(VQA):
         # Loss and Optimizer
         self.bce_loss = nn.BCEWithLogitsLoss()
         if not interact:
-            # if 'bert' in args.optim:
-            #     batch_per_epoch = len(self.valid_support_tuples[0].loader)
-            #     t_total = int(batch_per_epoch * args.epochs)
-            #     print("BertAdam Total Iters: %d" % t_total)
-            #     from lxrt.optimization import BertAdam
-            #     self.optim = BertAdam(list(p for p in self.model.parameters() if p.requires_grad),
-            #                         lr=args.lr,
-            #                         warmup=0.1,
-            #                         t_total=t_total)
-            # else:
-            # for n,p in self.model.named_parameters():
-            #     if n != "lxrt_encoder.model.bert.embeddings.word_embeddings.weight":
-            #         p.requires_grad = False
             base_trainable_params = [p for p in self.model.parameters() if p.requires_grad]
             if self.maml:
                 meta_trainable_params = [p for p in self.maml.parameters() if p.requires_grad]
@@ -205,11 +190,6 @@ class MetaVQA(VQA):
                 model_inputs['precomputed_word_embeddings'] = word_embeds
                 # give word embeddings to full model
                 logit, _ = self.model(**model_inputs)
-            # elif args.meta_lang_encoder_only:
-            #     assert 'feat' in model_inputs
-            #     # meta model is lxrt encoder only
-            #     lxrt_enc_outs = model(model_inputs['sent'], (model_inputs['feat'], model_inputs['pos']))
-            #     logit = self.model.logit_fc(lxrt_enc_outs)
             elif args.meta_answer_head_only:
                 assert 'feat' in model_inputs
                 # met model is `logit_fc` only
@@ -243,13 +223,10 @@ class MetaVQA(VQA):
         for epoch in range(args.meta_epochs):
             self.optim = Adam([p for p in self.model.parameters() if p.requires_grad], args.lr)
             print(f"=== EPOCH {epoch} ===")
-            # train_scores.append(0)
             train_loss = 0
             old_model = copy.deepcopy(self.model)
             tqdm_bar = tqdm(zip(train_support_tuples, train_query_tuples))
 
-            # TODO batch up tasks???
-            # for (train_support_batch, train_query_batch) in collate_support_query(train_support_tuples, train_query_tuples):
             for (train_support_tuple, train_query_tuple) in tqdm_bar:
                 _, train_support_loader, _ = train_support_tuple
                 _, train_query_loader, _ = train_query_tuple
@@ -266,32 +243,6 @@ class MetaVQA(VQA):
                     diff_params = [p for p in task_model.parameters() if p.requires_grad]
                     grads = grad(adaptation_loss, diff_params, allow_unused=True, retain_graph=True, create_graph=True)
                     maml_update(task_model, lr=args.lr, grads=grads)
-                    """
-                    full_model = copy.deepcopy(self.model)
-                    full_model.train()
-                    # inner loop on all parameters
-                    inner_loop = False
-                    # adaptation_loss = self.compute_loss(task_model, train_support_loader, use_tqdm=False, meta_word_embeds_only=args.meta_word_embeds_only)
-                    adaptation_loss = self.compute_loss(
-                        full_model.lxrt_encoder.model.bert.embeddings.word_embeddings,
-                        train_support_loader, use_tqdm=False,
-                        inner_loop=inner_loop,
-                        meta_word_embeds_only=False,
-                    )
-                    if not inner_loop:
-                        # do inner loop update
-                        diff_params = [p for p in full_model.parameters() if p.requires_grad]
-                        grads = grad(adaptation_loss, diff_params, allow_unused=True, retain_graph=True, create_graph=True)
-                        # updates parameters in-place
-                        maml_update(full_model, lr=args.lr, grads=grads)
-                    # meta-update specific parameters
-                    if args.meta_word_embeds_only or args.learn_word_embeds_only:
-                        task_model = full_model.lxrt_encoder.model.bert.embeddings.word_embeddings
-                    elif args.meta_answer_head_only:
-                        task_model = full_model.logit_fc
-                    else:
-                        task_model = full_model
-                    # """
                 else:
                     task_model = self.maml.clone()
                     _, train_support_loader, _ = train_support_tuple
@@ -306,19 +257,10 @@ class MetaVQA(VQA):
                 # Sum (over tasks)
                 query_loss = self.compute_loss(task_model, train_query_loader, use_tqdm=False, meta_word_embeds_only=args.meta_word_embeds_only)
                 query_loss.backward()  # gradients w.r.t. maml.parameters()
-                # nn.utils.clip_grad_norm_(self.model.parameters(), 5.)
                 self.meta_optim.step()
-                # query_loss2 = self.compute_loss(self.model, train_query_loader)
-                # query_loss2.backward()
-                # self.optim.step()
-                # train_loss.append(query_loss)
                 train_loss += query_loss.detach().cpu().item()
                 tqdm_bar.set_description("Loss : {:.3f} ".format(query_loss.detach().cpu().item()))
             train_loss /= len(train_support_tuples)
-            # self.meta_optim.zero_grad()
-            # train_loss.backward()
-            # self.meta_optim.step()
-            # train_losses.append(train_loss.detach().cpu().item())
             train_losses.append(train_loss)
             print(f"(Approximate) train loss: {train_loss}")
             ori_model = copy.deepcopy(self.model)
@@ -338,82 +280,6 @@ class MetaVQA(VQA):
                     best_valid_score = valid_score
         self.save("LAST")
 
-        """
-        # task_num, setsz, c_, h, w = train_support_tuples.size()
-        querysz = train_query_tuples.size(1)
-
-        losses_q = [0 for _ in range(self.update_step + 1)]  # losses_q[i] is the loss on step i
-        corrects = [0 for _ in range(self.update_step + 1)]
-
-
-        for (train_support_tuple, train_query_tuple) in zip(train_support_tuples, train_query_tuples):
-            import pdb; pdb.set_trace()
-            dset, loader, evaluator = train_support_tuple
-
-            # 1. run the i-th task and compute loss for k=0
-            logits = self.net(train_support_tuples[i], vars=None, bn_training=True)
-            loss = F.cross_entropy(logits, train_support_tuples[i])
-            grad = torch.autograd.grad(loss, self.net.parameters())
-            fast_weights = list(map(lambda p: p[1] - self.update_lr * p[0], zip(grad, self.net.parameters())))
-
-            # this is the loss and accuracy before first update
-            with torch.no_grad():
-                # [setsz, nway]
-                logits_q = self.net(train_query_tuples[i], self.net.parameters(), bn_training=True)
-                loss_q = F.cross_entropy(logits_q, train_query_tuples[i])
-                losses_q[0] += loss_q
-
-                pred_q = F.softmax(logits_q, dim=1).argmax(dim=1)
-                correct = torch.eq(pred_q, train_query_tuples[i]).sum().item()
-                corrects[0] = corrects[0] + correct
-
-            # this is the loss and accuracy after the first update
-            with torch.no_grad():
-                # [setsz, nway]
-                logits_q = self.net(train_query_tuples[i], fast_weights, bn_training=True)
-                loss_q = F.cross_entropy(logits_q, train_query_tuples[i])
-                losses_q[1] += loss_q
-                # [setsz]
-                pred_q = F.softmax(logits_q, dim=1).argmax(dim=1)
-                correct = torch.eq(pred_q, train_query_tuples[i]).sum().item()
-                corrects[1] = corrects[1] + correct
-
-            for k in range(1,self.update_step):
-                # 1. run the i-th task and compute loss for k=1~K-1
-                logits = self.net(train_support_tuples[i], fast_weights, bn_training=True)
-                loss = F.cross_entropy(logits, train_support_tuples[i])
-                # 2. compute grad on theta_pi
-                grad = torch.autograd.grad(loss, fast_weights)
-                # 3. theta_pi = theta_pi - train_lr * grad
-                fast_weights = list(map(lambda p: p[1] - self.update_lr * p[0], zip(grad, fast_weights)))
-
-                logits_q = self.net(train_query_tuples[i], fast_weights, bn_training=True)
-                # loss_q will be overwritten and just keep the loss_q on last update step.
-                loss_q = F.cross_entropy(logits_q, train_query_tuples[i])
-                losses_q[k + 1] += loss_q
-
-                with torch.no_grad():
-                    pred_q = F.softmax(logits_q, dim=1).argmax(dim=1)
-                    correct = torch.eq(pred_q, train_query_tuples[i]).sum().item()  # convert to numpy
-                    corrects[k + 1] = corrects[k + 1] + correct
-
-        # end of all tasks
-        # sum over all losses on query set across all tasks
-        loss_q = losses_q[-1] / len(train_support_tuples)
-
-        # optimize theta parameters
-        self.meta_optim.zero_grad()
-        loss_q.backward()
-        # print('meta update')
-        # for p in self.net.parameters()[:5]:
-        # 	print(torch.norm(p).item())
-        self.meta_optim.step()
-
-        accs = np.array(corrects) / (querysz * len(train_support_tuples))
-
-        return accs
-        """
-    
     def fewshot_evaluate(self, support_tuples: List[DataTuple], query_tuples: List[DataTuple], num_fs_updates: int = 1, dump_dir: str = None):
         """
         Given paired support/query data, trains model for `num_fs_updates` updates on train data, then evaluates on eval data.
@@ -429,11 +295,9 @@ class MetaVQA(VQA):
             ori_model = copy.deepcopy(self.model)
             if do_break: import pdb; pdb.set_trace()
             self.train(sup_tuple, sup_tuple, use_tqdm=False, epochs=num_fs_updates, do_save=False, do_break=do_break)
-            # for k in self.model.state_dict(): assert (self.model.state_dict()[k] == ori_model.state_dict()[k]).all()
             if do_break: import pdb; pdb.set_trace()
 
             sup_score = self.evaluate(sup_tuple)
-            # print(f"Train Score: {train_score}")
             sup_scores.append(sup_score)
             if dump_dir:
                 os.makedirs(dump_dir, exist_ok=True)
@@ -444,7 +308,6 @@ class MetaVQA(VQA):
             else:
                 dump_file = None
             q_score = self.evaluate(query_tuple, dump=dump_file)
-            # print(f"Evaluation Score: {eval_score}")
             qu_scores.append(q_score)
             self.model = ori_model
         avg_q_score = sum(qu_scores) / len(qu_scores)
@@ -473,8 +336,6 @@ class MetaVQA(VQA):
         if self.maml:
             if args.meta_word_embeds_only or args.learn_word_embeds_only:
                 self.maml = l2l.algorithms.MAML(self.model.lxrt_encoder.model.bert.embeddings.word_embeddings, lr=(args.meta_lr))
-            # elif args.meta_lang_encoder_only:
-            #     self.maml = l2l.algorithms.MAML(self.model.lxrt_encoder.model.bert, lr=(args.meta_lr))
             elif args.meta_answer_head_only:
                 self.maml = l2l.algorithms.MAML(self.model.logit_fc, lr=(args.meta_lr))
             else:
@@ -520,9 +381,6 @@ if __name__ == "__main__":
                     img_data.append(img_datum)
         else:
             img_data.extend(load_obj_npy('frcnn_output'))
-            # for split in ['minival']:
-            #     tsv_file = os.path.join(MSCOCO_IMGFEAT_ROOT, '%s_obj36.tsv' % (SPLIT2NAME[split]))
-            #     img_data.extend(load_obj_tsv(tsv_file, topk=5000))
 
         # Answers
         ans2label = json.load(open("data/vqa/trainval_ans2label.json"))
@@ -536,13 +394,6 @@ if __name__ == "__main__":
         result = vqa.interact(imgid2img, ans2label, label2ans)
     elif args.test is not None or args.epoch_sweep:
         args.fast = args.tiny = False       # Always loading all data in test
-        # if 'test' in args.test:
-        #     vqa.predict(
-        #         get_data_tuple(args.test, bs=950,
-        #                        shuffle=False, drop_last=False),
-        #         dump=os.path.join(args.output, 'test_predict.json')
-        #     )
-        # elif 'val' in args.test:
         if args.epoch_sweep:
             assert args.test is not None
             checkpoints = glob(os.path.join(args.epoch_sweep, "*.pth"))
@@ -575,7 +426,6 @@ if __name__ == "__main__":
                     dump_dir = os.path.join(args.output, f'{args.test}_try{trials}_predict'),
                 ))
             result = sum(valid_score_trials) / len(valid_score_trials)
-            # vqa.fewshot_evaluate(fewshot_val_train, fewshot_val_test, num_fs_updates=args.num_fewshot_updates)
             print(result)
             if args.epoch_sweep and result > best_result:
                 print("BEST EPOCH")
@@ -589,7 +439,6 @@ if __name__ == "__main__":
             valid_score_trials = []
             for trials in range(5):
                 valid_score_trials.append(vqa.fewshot_evaluate(vqa.valid_support_tuples, vqa.valid_query_tuples, num_fs_updates=args.num_fewshot_updates))
-                # valid_score_trials.append(vqa.fewshot_evaluate(vqa.train_support_tuples, vqa.train_query_tuples, num_fs_updates=args.num_fewshot_updates))
             init_eval_score = sum(valid_score_trials) / len(valid_score_trials)
             print("Valid Oracle: %0.2f" % (init_eval_score * 100))
         else:
