@@ -22,57 +22,61 @@ All other meta-learned checkpoints are under the subfolders in `snap/vqa/*`.
 ### Data
 You can download my few-shot data by running:
 ```bash
-bash download_data.sh
+unzip PokemonData.zip
+unzip fewshot.zip
+unzip fewshot_imgfeat.zip
 ```
 
 ### Few-shot meta-evaluation
+(Assumes GPU access)
 Non meta-learned LXMERT
 ```bash
-bash run/vqa_fewshot_eval.bash 14 vqa_lxr955 --load snap/vqa/vqa_lxr955/BEST --num_fewshot_updates 5 --test {val|test}
+bash run/vqa_fewshot_eval.bash 0 vqa_lxr955 --load snap/vqa/vqa_lxr955/BEST --num_fewshot_updates 5 --test {val|test}
 ```
 
 Meta-learned full model
 ```bash
-bash run/vqa_fewshot_eval.bash 11 vqa_fewshot_pokemon --load snap/vqa/vqa_fewshot_pokemon/BEST --num_fewshot_updates 10 --test {val|test}
+bash run/vqa_fewshot_eval.bash 0 vqa_fewshot_pokemon --load snap/vqa/vqa_fewshot_pokemon/BEST --num_fewshot_updates 10 --test {val|test}
 ```
 
 Word embeddings only -- no added vocab
 ```bash
-bash run/vqa_fewshot_eval.bash 9 vqa_fewshot_pokemon_toks_only_no_vocab --load snap/vqa/vqa_fewshot_pokemon_toks_only_no_vocab/BEST --test {val|test} --meta_word_embeds_only --learn_word_embeds_only --num_fewshot_updates 10 --lr 1e-2
+bash run/vqa_fewshot_eval.bash 0 vqa_fewshot_pokemon_toks_only_no_vocab --load snap/vqa/vqa_fewshot_pokemon_toks_only_no_vocab/BEST --test {val|test} --meta_word_embeds_only --learn_word_embeds_only --num_fewshot_updates 10 --lr 1e-2
 ```
 
 Word embeddings only -- w/ added vocab
 ```bash
-bash run/vqa_fewshot_eval.bash 13 vqa_fewshot_pokemon_meta_toks_only --load snap/vqa/vqa_fewshot_pokemon_meta_toks_only/BEST --add_pokemon_vocab --test {val|test} --meta_word_embeds_only --learn_word_embeds_only --lr 1e-2 --num_fewshot_updates 10
+bash run/vqa_fewshot_eval.bash 0 vqa_fewshot_pokemon_meta_toks_only --load snap/vqa/vqa_fewshot_pokemon_meta_toks_only/BEST --add_pokemon_vocab --test {val|test} --meta_word_embeds_only --learn_word_embeds_only --lr 1e-2 --num_fewshot_updates 10
 ```
 
 Answer classification head only
 ```bash
-bash run/vqa_fewshot_eval.bash 9 vqa_fewshot_pokemon_anshead_only --load snap/vqa/vqa_fewshot_pokemon_anshead_only/BEST --test {val|test} --num_fewshot_updates 10
+bash run/vqa_fewshot_eval.bash 0 vqa_fewshot_pokemon_anshead_only --load snap/vqa/vqa_fewshot_pokemon_anshead_only/BEST --test {val|test} --num_fewshot_updates 10
 ```
 Add `--load_frcnn` features to each of vqa commands in order use the frcnn (instead of pre-loaded features)
 
 
 ### Few-shot training (metalearning)
+(Assumes GPU access)
 If you want to meta-learn yourself, run:
 Top-Line result: Meta-learning full LXMERT
 ```bash
-bash run/vqa_fewshot_eval.bash 11 vqa_fewshot_pokemon --load snap/vqa/vqa_lxr955/BEST --meta_epochs 50 --meta_lr 1e-4
+bash run/vqa_fewshot_eval.bash 0 vqa_fewshot_pokemon --load snap/vqa/vqa_lxr955/BEST --meta_epochs 50 --meta_lr 1e-4
 ```
 
 Word embeddings only -- no added vocab
 ```bash
-bash run/vqa_fewshot_eval.bash 9 vqa_fewshot_pokemon_toks_only_no_vocab --load snap/vqa/vqa_lxr955/BEST --meta_epochs 50 --meta_word_embeds_only --learn_word_embeds_only
+bash run/vqa_fewshot_eval.bash 0 vqa_fewshot_pokemon_toks_only_no_vocab --load snap/vqa/vqa_lxr955/BEST --meta_epochs 50 --meta_word_embeds_only --learn_word_embeds_only
 ```
 
 Word embeddings only -- w/ added vocab
 ```bash
-bash run/vqa_fewshot_eval.bash 9 vqa_fewshot_pokemon_meta_toks_only --load snap/vqa/vqa_lxr955/BEST --meta_epochs 50 --meta_word_embeds_only --learn_word_embeds_only --add_pokemon_vocab
+bash run/vqa_fewshot_eval.bash 0 vqa_fewshot_pokemon_meta_toks_only --load snap/vqa/vqa_lxr955/BEST --meta_epochs 50 --meta_word_embeds_only --learn_word_embeds_only --add_pokemon_vocab
 ```
 
 Answer classification head only
 ```bash
-bash run/vqa_fewshot_eval.bash 9 vqa_fewshot_pokemon_anshead_only --load snap/vqa/vqa_lxr955/BEST --meta_answer_head_only --meta_epochs 50
+bash run/vqa_fewshot_eval.bash 0 vqa_fewshot_pokemon_anshead_only --load snap/vqa/vqa_lxr955/BEST --meta_answer_head_only --meta_epochs 50
 ```
 
 ### Dogs vs. Pokemon
