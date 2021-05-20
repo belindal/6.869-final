@@ -28,6 +28,7 @@ IMG_DIR = 'img_dir/'
 VQA_DATA_ROOT = 'data/vqa/'
 MSCOCO_IMGFEAT_ROOT = 'data/mscoco_imgfeat/'
 SPLIT2NAME = {
+    'dogs_mut_excl': 'dogs_mut_excl',
     'fewshot_train': 'fewshot_train',
     'train': 'train2014',
     'valid': 'val2014',

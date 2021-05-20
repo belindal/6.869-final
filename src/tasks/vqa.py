@@ -58,7 +58,7 @@ class VQA:
             )
 
         # Datasets
-        if not interact:
+        if not args.test or args.interact:
             self.train_tuple = get_data_tuple(
                 args.train, bs=args.batch_size, shuffle=True, drop_last=True,
                 frcnn_cfg=self.frcnn_cfg,
@@ -91,7 +91,7 @@ class VQA:
 
         # Loss and Optimizer
         self.bce_loss = nn.BCEWithLogitsLoss()
-        if not interact:
+        if not interact and not args.test:
             if 'bert' in args.optim:
                 batch_per_epoch = len(self.train_tuple.loader)
                 t_total = int(batch_per_epoch * args.epochs)
@@ -378,7 +378,11 @@ if __name__ == "__main__":
             )
             print(result)
         else:
-            assert False, "No such test option for %s" % args.test
+            result = vqa.evaluate(
+                get_data_tuple(args.test, bs=1,
+                               shuffle=False, drop_last=False, frcnn_cfg=vqa.frcnn_cfg),
+                dump=os.path.join(args.output, f'{args.test}_predict.json')
+            )
     else:
         print('Splits in Train data:', vqa.train_tuple.dataset.splits)
         if vqa.valid_tuple is not None:
