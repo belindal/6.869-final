@@ -12,7 +12,7 @@ My trained LXMERT checkpoints are available in `snap.zip`.
 
 The finetuned (no metalearning) LXMERT is in `snap/vqa/vqa_lxr955/BEST.pth`.
 
-To finetune your own checkpoint, refer to the README.md in the original LXMERT repositiory.
+To finetune your own checkpoint, refer to the README.md in the original LXMERT repositiory (https://github.com/airsplay/lxmert).
 
 All other meta-learned checkpoints are under the subfolders in `snap/vqa/*`.
 
