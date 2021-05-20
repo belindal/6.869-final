@@ -11,7 +11,11 @@ pip install -r requirements.txt
 My trained LXMERT checkpoints are available in `snap.zip`.
 
 The finetuned (no metalearning) LXMERT is in `snap/vqa/vqa_lxr955/BEST.pth`.
+
+To finetune your own checkpoint, refer to the README.md in the original LXMERT repositiory.
+
 All other meta-learned checkpoints are under the subfolders in `snap/vqa/*`.
+
 
 ## Few-shot Concept Learning
 

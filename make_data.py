@@ -323,16 +323,70 @@ def get_frcnn_features(splits_to_process: list = ['train', 'val', 'test']):
         print("Failed Names: " + str(failedNames))
 
 
+import shutil
+def sample_dogs(dogs_dir: str="dogs/Images/n02099601-golden_retriever", amount: int=1, out_dir: str="dogs/subsample"):
+    dogs = list(glob.glob(os.path.join(dogs_dir, "*.jpg")))
+    chosen_dogs = random.sample(dogs, amount)
+    for chosen_dog in chosen_dogs:
+        shutil.move(chosen_dog, out_dir)
+
+def make_dogs_side_by_side(pok_name, pok_image, dog_image, query_dog: bool, qid, dogs_dir = "dogs/subsample", out_imgs_dir = "img_dir/dogs_mut_excl"):
+    # decide order of side by side
+    image_order = [0,1]
+    random.shuffle(image_order)
+    image_list = [pok_image, dog_image]
+    # make side-by-side image
+    comb_imgpath = make_side_by_side_images(image_list[image_order[0]], image_list[image_order[1]], os.path.join(
+        out_imgs_dir,
+        f'{pok_name}_{".".join(os.path.split(pok_image)[-1].split(".")[0:-1])}_dog_{".".join(os.path.split(dog_image)[-1].split(".")[0:-1])}.png',
+    ))
+    return {
+        'img_id': ".".join(os.path.split(comb_imgpath)[-1].split(".")[0:-1]),
+        'label': {'left' if image_order[0] == 0 else 'right': 1},
+        'question_id': qid,
+        'question_type': f'which side',
+        'sent': f'Which side is the {pok_name}?',
+    }
+
+def make_dogs_mut_excl_data():
+    all_pokemon_name_to_imgs = {}
+    all_pokemon_names = []
+
+    for split in ['train', 'val', 'test']:
+        for pokemon in glob.glob(os.path.join(raw_images_dir, split, "*")):
+            pokemon_name = os.path.split(pokemon)[-1]
+            if 'side_by_side' in pokemon_name: continue
+            all_pokemon_names.append(pokemon_name)
+            all_pokemon_name_to_imgs[pokemon_name] = list(glob.glob(os.path.join(pokemon, "*")))
+
+    examples = []
+    for d, dog_image in enumerate(glob.glob("dogs/subsample/*.jpg")):
+        # choose random pokemon
+        pok_name = random.choice(all_pokemon_names)
+        pok_image = random.choice(all_pokemon_name_to_imgs[pok_name])
+        ex = make_dogs_side_by_side(pok_name, pok_image, dog_image, query_dog=True, qid=d*2)
+        examples.append(ex)
+        examples.append({
+            'img_id': ex['img_id'],
+            'label': {'right' if ex['label'] == 'left' else 'right': 1},
+            'question_id': d*2+1,
+            'question_type': f'which side',
+            'sent': f'Which side is the dog?',
+        })
+    json.dump(examples, open(f"data/vqa/dogs_mut_excl.json", 'w'), indent=4)
 
 def main():
     # print("Filtering Images")
     # filter_image_data()
     # print("Splitting Images")
     # split_image_data()
-    print("Making Questions")
-    make_qs_data(splits=['test'])
-    print("Extracting FRCNN Features")
-    get_frcnn_features(splits_to_process=['test'])
+    # print("Making Questions")
+    # make_qs_data(splits=['test'])
+    # print("Extracting FRCNN Features")
+    # get_frcnn_features(splits_to_process=['test'])
+    # sample_dogs()
+    make_dogs_mut_excl_data()
+    
 
 if __name__ == "__main__":
     main()
